@@ -3,9 +3,15 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.utils.task_group import TaskGroup
 
+import sys
+import os
 import json
 import logging
 
+# Add src to path for config imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.config import get_settings
 from data_quality import DataQualityAssessment
 from feature_eng import FeatureEngineeringPipeline
 from viz import DataQualityMonitoring, FeatureEngineeringMonitoring, ValidationMonitoring, ModelTrainingMonitoring, ModelLifecycleMonitoring, ComprehensiveMonitoring
@@ -14,16 +20,11 @@ from automated_data_validation import validate_raw_data, validate_feature_and_ta
 from model_training import ModelTrainingPipeline
 from model_promotion import ModelPromotion
 
-DB_CONFIG = {
-    "dbname": "postgres",
-    "user": "varunrajput", 
-    "password": "yourpassword",
-    "host": "host.docker.internal",
-    "port": "5432"
-}
-
-SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'XRPUSDT', 'DOTUSDT', 'AVAXUSDT', 'MATICUSDT', 'LINKUSDT']
-BASE_URL = "https://api.binance.com/api/v3/klines"
+# Load configuration from environment
+settings = get_settings()
+DB_CONFIG = settings.database.get_connection_dict()
+SYMBOLS = settings.binance.symbols
+BASE_URL = settings.binance.base_url
 
 logger = logging.getLogger(__name__)
 

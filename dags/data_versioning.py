@@ -11,40 +11,35 @@ import shutil
 from typing import Dict, List, Optional, Tuple
 import hashlib
 from io import BytesIO
+import sys
 
+# Add src to path for config imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from minio import Minio
 from minio.error import S3Error
+from src.config import get_settings
+
+# Load configuration from environment
+settings = get_settings()
 
 # DVC Configuration
 DVC_CONFIG = {
-    'data_dir': '/opt/airflow/data',  # Adjust based on your Airflow setup
-    'remote_name': 'crypto_storage',
-    'remote_url': 's3://crypto-data-versions',
+    'data_dir': '/opt/airflow/data',
+    'remote_name': settings.dvc.remote_name,
+    'remote_url': settings.dvc.remote_url,
     'remote_config': {
-        'endpointurl': 'http://minio:9000',
-        'access_key_id': 'admin',
-        'secret_access_key': 'admin123'
+        'endpointurl': settings.dvc.endpoint_url,
+        'access_key_id': settings.dvc.access_key_id or settings.minio.access_key,
+        'secret_access_key': settings.dvc.secret_access_key or settings.minio.secret_key
     }
 }
 
-DB_CONFIG = {
-    "dbname": "postgres",
-    "user": "varunrajput", 
-    "password": "yourpassword",
-    "host": "host.docker.internal",
-    "port": "5432"
-}
+DB_CONFIG = settings.database.get_connection_dict()
 
 # MinIO Configuration
-MINIO_CONFIG = {
-    'endpoint': 'minio:9000',  # Adjust based on your Helm setup
-    'access_key': 'admin',  # Change these in production!
-    'secret_key': 'admin123',
-    'secure': False  # Set to True if using HTTPS
-}
-
-BUCKET_NAME = 'crypto-features'
+MINIO_CONFIG = settings.minio.get_client_config()
+BUCKET_NAME = settings.minio.bucket_features
 
 class DVCDataVersioning:
     """Professional data versioning using DVC with S3/MinIO backend"""

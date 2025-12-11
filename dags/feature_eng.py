@@ -4,20 +4,22 @@ import numpy as np
 from datetime import datetime
 import logging
 from io import BytesIO
+import sys
+import os
 
+# Add src to path for config imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from minio import Minio
 from minio.error import S3Error
+from src.config import get_settings
+
+# Load configuration from environment
+settings = get_settings()
 
 # MinIO Configuration
-MINIO_CONFIG = {
-    'endpoint': 'minio:9000',  # Adjust based on your Helm setup
-    'access_key': 'admin',  # Change these in production!
-    'secret_key': 'admin123',
-    'secure': False  # Set to True if using HTTPS
-}
-
-BUCKET_NAME = 'crypto-features'
+MINIO_CONFIG = settings.minio.get_client_config()
+BUCKET_NAME = settings.minio.bucket_features
 
 class FeatureEngineeringPipeline:
     def __init__(self, db_config):

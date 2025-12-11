@@ -11,6 +11,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from io import BytesIO
 import base64
+import sys
+import os
+
+# Add src to path for config imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from data_quality import DataQualityAssessment
 from feature_eng import FeatureEngineeringPipeline
@@ -19,23 +24,22 @@ import psycopg2
 
 from minio import Minio
 from minio.error import S3Error
+from src.config import get_settings
 
-# Keep your existing imports and constants
-SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'XRPUSDT', 'DOTUSDT', 'AVAXUSDT', 'MATICUSDT', 'LINKUSDT']
-BASE_URL = "https://api.binance.com/api/v3/klines"
-BUCKET_NAME = 'crypto-features'
-
-# MinIO Configuration
-MINIO_CONFIG = {
-    'endpoint': 'minio:9000',  # Adjust based on your Helm setup
-    'access_key': 'admin',  # Change these in production!
-    'secret_key': 'admin123',
-    'secure': False  # Set to True if using HTTPS
-}
+# Load configuration from environment
+settings = get_settings()
+SYMBOLS = settings.binance.symbols
+BASE_URL = settings.binance.base_url
+BUCKET_NAME = settings.minio.bucket_features
+MINIO_CONFIG = settings.minio.get_client_config()
 
 class MLMonitoringIntegration:
-    def __init__(self, mlflow_tracking_uri="http://mlflow-tracking", 
-                 prometheus_gateway="http://pushgateway-prometheus-pushgateway.ml-monitoring:9091"):
+    def __init__(self, mlflow_tracking_uri=None, prometheus_gateway=None):
+        # Use config if not provided
+        if mlflow_tracking_uri is None:
+            mlflow_tracking_uri = settings.mlflow.tracking_uri
+        if prometheus_gateway is None:
+            prometheus_gateway = settings.monitoring.prometheus_pushgateway
         self.mlflow_tracking_uri = mlflow_tracking_uri
         self.artifact_bucket = BUCKET_NAME
         self.prometheus_gateway = prometheus_gateway

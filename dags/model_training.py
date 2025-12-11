@@ -7,6 +7,11 @@ from io import BytesIO
 import json
 import joblib
 import pickle
+import sys
+import os
+
+# Add src to path for config imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import lightgbm as lgb
 import xgboost as xgb
@@ -25,20 +30,14 @@ from mlflow.tracking import MlflowClient
 from mlflow.models.signature import infer_signature
 from mlflow.types.schema import Schema, ColSpec
 import tempfile
-import os
 
 from automated_data_validation import DataValidationSuite
+from src.config import get_settings
 
-
-# MinIO Configuration
-MINIO_CONFIG = {
-    'endpoint': 'minio:9000',
-    'access_key': 'admin',
-    'secret_key': 'admin123',
-    'secure': False
-}
-
-BUCKET_NAME = 'crypto-models'
+# Load configuration from environment
+settings = get_settings()
+MINIO_CONFIG = settings.minio.get_client_config()
+BUCKET_NAME = settings.minio.bucket_models
 
 # ADD this configuration at the top of the file:
 PREDICTION_CONFIGS = {
@@ -88,7 +87,10 @@ PREDICTION_CONFIGS = {
 
 
 class MLflowModelRegistry:
-    def __init__(self, tracking_uri="http://mlflow-tracking"):
+    def __init__(self, tracking_uri=None):
+        # Use config if tracking_uri not provided
+        if tracking_uri is None:
+            tracking_uri = settings.mlflow.tracking_uri
         self.tracking_uri = tracking_uri
         mlflow.set_tracking_uri(tracking_uri)
         self.client = MlflowClient()

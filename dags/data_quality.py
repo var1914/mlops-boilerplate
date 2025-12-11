@@ -3,18 +3,19 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import logging
+import sys
+import os
 
-DB_CONFIG = {
-    "dbname": "postgres",
-    "user": "varunrajput", 
-    "password": "yourpassword",
-    "host": "host.docker.internal",
-    "port": "5432"
-}
+# Add src to path for config imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Keep your existing imports and constants
-SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT', 'XRPUSDT', 'DOTUSDT', 'AVAXUSDT', 'MATICUSDT', 'LINKUSDT']
-BASE_URL = "https://api.binance.com/api/v3/klines"
+from src.config import get_settings
+
+# Load configuration from environment
+settings = get_settings()
+DB_CONFIG = settings.database.get_connection_dict()
+SYMBOLS = settings.binance.symbols
+BASE_URL = settings.binance.base_url
 
 class DataQualityAssessment():
     def __init__(self, db_config):
