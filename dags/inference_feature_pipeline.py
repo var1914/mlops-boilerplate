@@ -15,7 +15,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.config import get_settings
-from model_training import MLflowModelRegistry
+from dags.model_training import MLflowModelRegistry
 
 # Task configurations - must match your PREDICTION_CONFIGS
 INFERENCE_TASKS = {

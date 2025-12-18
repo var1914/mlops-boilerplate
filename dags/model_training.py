@@ -31,7 +31,7 @@ from mlflow.models.signature import infer_signature
 from mlflow.types.schema import Schema, ColSpec
 import tempfile
 
-from automated_data_validation import DataValidationSuite
+# from automated_data_validation import DataValidationSuite  # Not needed for inference
 from src.config import get_settings
 
 # Load configuration from environment
