@@ -1,24 +1,29 @@
 # ML Inference Infrastructure Boilerplate
 
-**Production-ready infrastructure for serving ML models at scale with monitoring, auto-scaling, and model versioning.**
+**From trained models to production serving in minutes.**
 
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue)](https://www.docker.com/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326CE5)](https://kubernetes.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+> **Note:** This boilerplate focuses on **inference/serving infrastructure**. Training pipeline integration is on the roadmap.
+
 ---
 
 ## 🎯 What Is This?
 
-A complete MLOps boilerplate that provides everything you need to serve ML models in production:
+An ML inference boilerplate that provides the infrastructure to serve your trained models:
 
-- **Model Registry** (MLflow) - Version control for ML models
-- **Inference API** (FastAPI) - REST API for predictions
-- **Storage** (MinIO/S3) - Model artifact storage
-- **Caching** (Redis) - Fast feature caching
-- **Monitoring** (Prometheus + Grafana) - Metrics and dashboards
-- **Auto-scaling** (Kubernetes HPA) - Scale based on load
-- **Production-grade** - Health checks, rolling updates, security
+**What's Working Now:**
+- ✅ **Local Testing** (Docker Compose) - Full stack with MLflow, API, monitoring in 5 minutes
+- ✅ **Model Registry** (MLflow) - Version control and stage-based deployment
+- ✅ **Inference API** (FastAPI) - REST API with auto-docs
+- ✅ **Monitoring** (Prometheus + Grafana) - Metrics and dashboards
+- ✅ **Production K8s Manifests** - Deployment, HPA, Ingress, health probes
+
+**What's Coming:**
+- ⏳ **Training Pipeline** - Automated model training and registration
+- ⏳ **Full Production Setup** - End-to-end MLOps with training + serving
 
 ---
 
