@@ -37,7 +37,7 @@ An ML inference boilerplate that provides the infrastructure to serve your train
 ```bash
 # Clone repository
 git clone <repo-url>
-cd ml-eng-with-ops
+cd mlops-boilerplate
 
 # Start all services with Docker Compose (for local testing)
 docker-compose up -d
