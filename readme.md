@@ -130,6 +130,62 @@ curl -X POST "http://localhost:8000/predict/BTCUSDT" \
 
 ---
 
+## 🎬 Try It Yourself: E2E Demo
+
+Want to see the full workflow in action? Run our demo script that automatically:
+1. Creates a sample ML model (sklearn or HuggingFace)
+2. Registers it to MLflow with artifacts in MinIO
+3. Promotes to Production stage
+4. Triggers API to reload models
+5. Makes inference requests
+6. Shows Prometheus metrics
+
+### Run the Demo (Docker Compose)
+
+```bash
+# Make sure services are running
+docker-compose up -d
+
+# Install dependencies (first time only)
+pip install mlflow scikit-learn requests minio
+
+# Run the E2E demo
+python3 scripts/demo-e2e-workflow.py
+```
+
+### Demo Options
+
+```bash
+# Default: sklearn model with Docker Compose endpoints
+python3 scripts/demo-e2e-workflow.py
+
+# Use a HuggingFace model instead
+python3 scripts/demo-e2e-workflow.py --use-huggingface
+
+# Skip model registration (just test inference & metrics)
+python3 scripts/demo-e2e-workflow.py --skip-model-registration
+
+# Custom number of inference requests
+python3 scripts/demo-e2e-workflow.py --num-requests 20
+```
+
+### View Results
+
+After running the demo:
+- **MLflow UI**: http://localhost:5001 - See registered model and experiment
+- **Grafana Dashboard**: http://localhost:3000 → Dashboards → ML Pipeline → ML Inference API Dashboard
+- **API Docs**: http://localhost:8000/docs - Try the endpoints yourself
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Grafana | http://localhost:3000 | admin / admin |
+| MLflow | http://localhost:5001 | (no auth) |
+| MinIO Console | http://localhost:9001 | admin / admin123 |
+| API Docs | http://localhost:8000/docs | (no auth) |
+| Prometheus | http://localhost:9090 | (no auth) |
+
+---
+
 ## 📦 Production Deployment (Kubernetes)
 
 > **✅ TESTED:** Docker Desktop Kubernetes (ARM64/Apple Silicon)
@@ -174,6 +230,21 @@ open http://localhost:3000  # admin / prom-operator
 
 ```bash
 ./scripts/k8s-bootstrap.sh --cleanup
+```
+
+### Run E2E Demo on Kubernetes
+
+```bash
+# First, port-forward the services
+kubectl port-forward -n ml-pipeline svc/ml-mlflow 5000:5000 &
+kubectl port-forward -n ml-pipeline svc/crypto-prediction-api 8000:8000 &
+kubectl port-forward -n ml-pipeline svc/ml-minio 9000:9000 &
+
+# Run demo with K8s endpoints
+python3 scripts/demo-e2e-workflow.py \
+    --mlflow-url http://localhost:5000 \
+    --api-url http://localhost:8000 \
+    --minio-endpoint localhost:9000
 ```
 
 **For detailed Kubernetes deployment guide, see [k8s/README.md](k8s/README.md)**
@@ -504,7 +575,8 @@ kubectl top pods -n ml-pipeline
 │
 ├── scripts/                      # Deployment & Validation Scripts
 │   ├── k8s-bootstrap.sh          # One-command K8s deployment
-│   └── validate-deployment.sh    # Validate Docker/K8s deployments
+│   ├── validate-deployment.sh    # Validate Docker/K8s deployments
+│   └── demo-e2e-workflow.py      # E2E demo script (model → MLflow → API → metrics)
 │
 ├── dags/                         # ML Pipeline
 │   ├── inference_feature_pipeline.py  # Inference logic & task definitions

@@ -469,6 +469,77 @@ Before deploying to production:
 
 ---
 
+## E2E Demo
+
+Run the full ML workflow demo on your Kubernetes deployment:
+
+### Step 1: Port Forward Services
+
+```bash
+# Terminal 1: MLflow
+kubectl port-forward -n ml-pipeline svc/ml-mlflow 5000:5000
+
+# Terminal 2: API
+kubectl port-forward -n ml-pipeline svc/crypto-prediction-api 8000:8000
+
+# Terminal 3: MinIO
+kubectl port-forward -n ml-pipeline svc/ml-minio 9000:9000
+
+# Terminal 4: Grafana (optional)
+kubectl port-forward -n ml-pipeline svc/ml-monitoring-grafana 3000:80
+```
+
+Or run all in background:
+```bash
+kubectl port-forward -n ml-pipeline svc/ml-mlflow 5000:5000 &
+kubectl port-forward -n ml-pipeline svc/crypto-prediction-api 8000:8000 &
+kubectl port-forward -n ml-pipeline svc/ml-minio 9000:9000 &
+kubectl port-forward -n ml-pipeline svc/ml-monitoring-grafana 3000:80 &
+```
+
+### Step 2: Run the Demo
+
+```bash
+# Install dependencies (first time only)
+pip install mlflow scikit-learn requests minio
+
+# Run E2E demo with K8s endpoints
+python3 scripts/demo-e2e-workflow.py \
+    --mlflow-url http://localhost:5000 \
+    --api-url http://localhost:8000 \
+    --minio-endpoint localhost:9000
+```
+
+### Step 3: View Results
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Grafana | http://localhost:3000 | admin / prom-operator |
+| MLflow | http://localhost:5000 | (no auth) |
+| MinIO Console | http://localhost:9001 | admin / admin123 |
+| API Docs | http://localhost:8000/docs | (no auth) |
+
+### Demo Options
+
+```bash
+# Use HuggingFace model instead of sklearn
+python3 scripts/demo-e2e-workflow.py \
+    --mlflow-url http://localhost:5000 \
+    --use-huggingface
+
+# Skip model registration (just test inference & metrics)
+python3 scripts/demo-e2e-workflow.py \
+    --mlflow-url http://localhost:5000 \
+    --skip-model-registration
+
+# More inference requests to see metrics
+python3 scripts/demo-e2e-workflow.py \
+    --mlflow-url http://localhost:5000 \
+    --num-requests 50
+```
+
+---
+
 ## Support
 
 - Validate deployment: `./scripts/validate-deployment.sh --env k8s`
