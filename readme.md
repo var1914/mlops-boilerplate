@@ -15,14 +15,22 @@
 
 A complete ML engineering platform that provides end-to-end infrastructure:
 
+**Current Status:**
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **ETL Pipeline** | ✅ **FULLY TESTED** | 2.25M records loaded, verified end-to-end |
+| **ML Training Pipeline** | ⏳ **Testing Pending** | DAG deployed, infrastructure ready |
+| **Infrastructure** | ✅ **PRODUCTION READY** | All 18 pods running on K8s |
+
 **What's Working Now:**
-- ✅ **ETL Pipeline** - Binance API → MinIO → PostgreSQL (2.25M records loaded, verified)
-- ✅ **ML Training Pipeline** - Features → Training → MLflow → API (Airflow DAG)
-- ✅ **Model Registry** (MLflow) - Version control and stage-based deployment
-- ✅ **Inference API** (FastAPI) - REST API with auto-docs
-- ✅ **Monitoring** (Prometheus + Grafana) - Metrics and dashboards
+- ✅ **ETL Pipeline** - Binance API → MinIO → PostgreSQL (**2.25M records loaded, verified**)
 - ✅ **Kubernetes Deployment** - Fully tested on Docker Desktop K8s (ARM64/Apple Silicon)
 - ✅ **Apache Airflow 3.0** - Unified orchestration with KubernetesExecutor
+- ✅ **Model Registry** (MLflow) - Version control and stage-based deployment
+- ✅ **Monitoring** (Prometheus + Grafana) - Metrics and dashboards
+- ⏳ **ML Training Pipeline** - DAG deployed, ready for testing (Features → Training → MLflow)
+- ⏳ **Inference API** (FastAPI) - Ready for deployment after ML training
 
 **Pipeline Architecture:**
 ```
@@ -100,26 +108,51 @@ kubectl port-forward -n ml-pipeline svc/ml-monitoring-grafana 3000:80
 # Open: http://localhost:3000 (admin / prom-operator)
 ```
 
-### Run ETL Pipeline
+### Run ETL Pipeline (Load 2.25M Records)
 
-1. **Open Airflow UI**:
-   - Access: http://localhost:8080
+> **✅ TESTED AND VERIFIED** - This pipeline has been fully tested and loads ~2.25M crypto records
+
+**Option A: Via Airflow UI (Recommended)**
+
+1. **Port forward Airflow API**:
+   ```bash
+   kubectl port-forward -n ml-pipeline svc/airflow-api-server 8080:8080
+   ```
+
+2. **Open Airflow UI**:
+   - URL: http://localhost:8080
    - Login: `admin` / `admin123`
 
-2. **Enable and Trigger DAG**:
+3. **Enable and Trigger DAG**:
    - Find the `etl_crypto_data_pipeline` DAG
-   - Toggle it to "On"
-   - Click the play button to trigger manually
+   - Toggle it to "On" (if paused)
+   - Click the play button (▶) to trigger manually
 
-3. **Monitor Execution**:
+4. **Monitor Execution**:
    - Watch task progress in the Grid view
-   - View logs for each task (Note: logs disappear after pod deletion - this is a known limitation)
+   - All 10 symbols extract in parallel
+   - Total time: ~15-20 minutes
 
-4. **Verify Data Loaded**:
-   ```bash
-   kubectl exec -n ml-pipeline postgresql-0 -- \
-     psql -U postgres -d crypto -c "SELECT symbol, COUNT(*) FROM crypto_data GROUP BY symbol;"
-   ```
+**Option B: Via CLI**
+```bash
+# Trigger ETL pipeline
+kubectl exec -n ml-pipeline deployment/airflow-scheduler -- \
+  airflow dags trigger etl_crypto_data_pipeline
+
+# Monitor running pods
+kubectl get pods -n ml-pipeline | grep etl
+```
+
+**5. Verify Data Loaded**:
+```bash
+# Check record counts per symbol
+kubectl exec -n ml-pipeline postgresql-0 -- \
+  psql -U postgres -d crypto -c "SELECT symbol, COUNT(*) FROM crypto_data GROUP BY symbol;"
+
+# Check total records
+kubectl exec -n ml-pipeline postgresql-0 -- \
+  psql -U postgres -d crypto -c "SELECT COUNT(*) as total_records FROM crypto_data;"
+```
 
 **Expected Results**:
 ```
@@ -264,7 +297,8 @@ USER airflow
 RUN pip install --no-cache-dir \
     psycopg2-binary minio boto3 pandas numpy pyarrow \
     scikit-learn lightgbm xgboost mlflow requests redis \
-    prometheus-client
+    prometheus-client matplotlib seaborn plotly joblib \
+    pydantic pydantic-settings
 
 COPY --chown=airflow:root dags/ /opt/airflow/dags/
 COPY --chown=airflow:root src/ /opt/airflow/src/
@@ -273,8 +307,8 @@ ENV PYTHONPATH="/opt/airflow/src:/opt/airflow/dags"
 
 Build and push:
 ```bash
-docker build -t localhost:5050/custom-airflow:0.0.6 -f docker/Dockerfile.airflow .
-docker push localhost:5050/custom-airflow:0.0.6
+docker build -t localhost:5050/custom-airflow:0.0.8 -f docker/Dockerfile.airflow .
+docker push localhost:5050/custom-airflow:0.0.8
 ```
 
 ### Environment Variables
@@ -356,24 +390,35 @@ Extracts crypto data from Binance API and loads to PostgreSQL.
 
 ### ML Training Pipeline: `ml_training_pipeline`
 
+> **⏳ STATUS: Testing Pending** - DAG deployed and infrastructure ready
+
 Trains models on crypto data and deploys to production.
 
 ```bash
-# Run ML demo (standalone)
-./scripts/demo-ml-pipeline.sh --symbol BTCUSDT
+# Trigger via Airflow CLI
+kubectl exec -n ml-pipeline deployment/airflow-scheduler -- \
+  airflow dags trigger ml_training_pipeline
 
-# Run via Airflow
-./scripts/demo-ml-pipeline.sh --airflow
+# Or via Airflow UI: http://localhost:8080
+# Enable and trigger 'ml_training_pipeline' DAG
 ```
 
 **DAG Stages:**
 1. **Data Validation** - Check data quality for training readiness
-2. **Feature Engineering** - Generate 80+ technical indicators
-3. **Model Training** - Train LightGBM and XGBoost models
+2. **Feature Engineering** - Generate 80+ technical indicators (parallel per symbol)
+3. **Model Training** - Train LightGBM and XGBoost models (uses `ml_training_pool`)
 4. **Model Promotion** - Promote best models to staging/production
-5. **API Reload** - Trigger inference API to load new models
 
 **Schedule:** `0 2 * * *` (Daily at 2 AM, after ETL completes)
+
+**Prerequisites:**
+- ETL pipeline must run first (to populate `crypto_data` table)
+- Create ML training pool: `kubectl exec -n ml-pipeline deployment/airflow-scheduler -- airflow pools set ml_training_pool 3 "ML training pool"`
+
+**Expected Output:**
+- 60 models trained (10 symbols × 3 tasks × 2 algorithms)
+- Models registered in MLflow with metrics
+- Best models promoted to staging
 
 ### Deploy Airflow on Kubernetes
 
@@ -913,19 +958,26 @@ This boilerplate includes a cryptocurrency prediction example, but works for any
 ## 🔮 Roadmap
 
 ### What's Working Now
-- ✅ Model serving infrastructure (FastAPI, MLflow, K8s)
-- ✅ Auto-scaling based on load
-- ✅ Monitoring and metrics
-- ✅ Model versioning and stage-based deployment
-- ✅ Production-grade security and health checks
+- ✅ **ETL Pipeline** - Binance API → MinIO → PostgreSQL (2.25M records, tested)
+- ✅ **Apache Airflow 3.0** - KubernetesExecutor with custom image
+- ✅ **Infrastructure** - PostgreSQL, MinIO, Redis, MLflow, Prometheus, Grafana
+- ✅ **Monitoring** - Prometheus metrics + Grafana dashboards
+- ✅ **Model Registry** - MLflow with stage-based deployment
+
+### In Progress
+- ⏳ **ML Training Pipeline** - DAG deployed, testing pending
+  - Feature engineering (80+ indicators)
+  - LightGBM + XGBoost training
+  - Model promotion to MLflow
+  - Data validation framework
 
 ### Coming Soon
 
-**Training Pipeline Integration**
-- End-to-end training pipeline
-- Automated model training and registration
-- Training job orchestration
-- Experiment tracking integration
+**Inference API Deployment**
+- FastAPI prediction service
+- Load models from MLflow
+- Real-time feature generation
+- Auto-scaling with HPA
 
 **Authentication & Security**
 - JWT/OAuth2 authentication
@@ -1435,4 +1487,20 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 **From trained models to production serving in minutes.**
 
-> **Note:** This boilerplate focuses on **inference/serving infrastructure**. Training pipeline integration is on the roadmap.
+---
+
+## 📊 Current Implementation Status
+
+| Component | Status | Details |
+|-----------|--------|---------|
+| **ETL Pipeline** | ✅ Fully Tested | 2.25M records loaded from Binance API |
+| **ML Training Pipeline** | ⏳ Testing Pending | DAG deployed, infrastructure ready |
+| **Inference API** | 📋 Planned | Deploy after ML training validates |
+| **Monitoring** | ✅ Ready | Prometheus + Grafana deployed |
+
+**Documentation:**
+- [ML_PIPELINE_SUMMARY.md](ML_PIPELINE_SUMMARY.md) - Detailed ML pipeline documentation
+- [QUICK_START.md](QUICK_START.md) - Quick start guide
+- [DEPLOYMENT_SUMMARY.md](DEPLOYMENT_SUMMARY.md) - Deployment details
+
+> **Current Focus:** ETL pipeline is production-ready. ML training pipeline is deployed and ready for end-to-end testing.
