@@ -1,25 +1,88 @@
-version: '3.8'
+name: mleng
+
+# ---------------------------------------------------------------------------
+# Shared Airflow config — referenced by airflow-init, scheduler, webserver
+# ---------------------------------------------------------------------------
+x-airflow-common: &airflow-common
+  image: apache/airflow:3.0.2-python3.12
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: "ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
+    AIRFLOW__WEBSERVER__SECRET_KEY: "ml-eng-platform-secret"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # Airflow 3.0: LocalExecutor task subprocesses use the Task SDK to call back to
+    # the API server. Default falls back to localhost:8080, which fails in Docker Compose
+    # because the scheduler and api-server run in separate containers.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-webserver:8080/execution/"
+    # Shared JWT signing keys — MUST be identical on scheduler and api-server.
+    # The scheduler signs task tokens with [api_auth] jwt_secret; the api-server validates them.
+    # If left unset each container generates its own random key → "Signature verification failed".
+    AIRFLOW__API_AUTH__JWT_SECRET: "cF1A7mWl4zbZNwUyySQHxg"
+    AIRFLOW__CORE__INTERNAL_API_SECRET_KEY: "dOMrAGQ+s6g0hWCK+u0Qxvn+fP4MJEvMlHlCC+ffAvo="
+    # Airflow 3.0 Simple Auth Manager — define users (username:role) and password file
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
+    # Install ETL/ML dependencies at container start
+    _PIP_ADDITIONAL_REQUIREMENTS: >-
+      psycopg2-binary minio boto3 pandas numpy pyarrow
+      scikit-learn lightgbm xgboost mlflow requests redis
+      prometheus-client pydantic pydantic-settings
+    # ETL pipeline env vars (same values as K8s)
+    MINIO_ENDPOINT: minio:9000
+    MINIO_ACCESS_KEY: admin
+    MINIO_SECRET_KEY: admin123
+    CRYPTO_DB_HOST: postgres
+    CRYPTO_DB_PORT: "5432"
+    CRYPTO_DB_NAME: crypto
+    CRYPTO_DB_USER: crypto
+    CRYPTO_DB_PASSWORD: crypto123
+    MLFLOW_TRACKING_URI: http://mlflow:5001
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+    REDIS_PASSWORD: ""        # Docker Compose Redis has no auth
+    PYTHONPATH: /opt/airflow/dags:/opt/airflow/src
+  volumes:
+    - ./dags:/opt/airflow/dags          # DAGs live-mounted (editable without rebuild)
+    - ./src:/opt/airflow/src
+    - /Volumes/T7Shield/ml-eng-data/airflow/logs:/opt/airflow/logs
+    - /Volumes/T7Shield/ml-eng-data/airflow/plugins:/opt/airflow/plugins
+    # Persist the SimpleAuthManager password file so admin/admin123 survives restarts
+    - ./airflow-passwords.json:/opt/airflow/simple_auth_manager_passwords.json.generated
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
 
 services:
-  # PostgreSQL - Stores OHLCV data
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — stores ETL data (crypto db) + Airflow metadata (airflow db)
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:14-alpine
     container_name: ml-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: crypto_trading
+      POSTGRES_DB: postgres        # default DB; init script creates airflow/mlflow/crypto
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - /Volumes/T7Shield/ml-eng-data/postgres:/var/lib/postgresql/data
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # Redis - Feature caching
+  # ---------------------------------------------------------------------------
+  # Redis — feature caching for inference
+  # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: ml-redis
@@ -31,7 +94,9 @@ services:
       timeout: 5s
       retries: 5
 
-  # MinIO - S3-compatible storage for models and data
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible storage for raw data + model artifacts
+  # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:latest
     container_name: ml-minio
@@ -43,19 +108,48 @@ services:
       - "9000:9000"
       - "9001:9001"
     volumes:
-      - minio_data:/data
+      - /Volumes/T7Shield/ml-eng-data/minio:/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
 
-  # MLflow Tracking Server
+  # ---------------------------------------------------------------------------
+  # MinIO setup — creates required buckets on first start (exits after)
+  # ---------------------------------------------------------------------------
+  minio-setup:
+    image: minio/mc:latest
+    container_name: ml-minio-setup
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 admin admin123 &&
+        mc mb --ignore-existing local/crypto-raw-data &&
+        mc mb --ignore-existing local/crypto-features &&
+        mc mb --ignore-existing local/mlflow-artifacts &&
+        echo 'MinIO buckets ready'
+      "
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # MLflow — experiment tracking + model registry
+  # ---------------------------------------------------------------------------
   mlflow:
     image: python:3.9-slim
     container_name: ml-mlflow
-    working_dir: /mlflow
-    command: bash -c "apt-get update && apt-get install -y curl && pip install mlflow psycopg2-binary boto3 && mlflow server --host 0.0.0.0 --port 5001 --backend-store-uri postgresql://postgres:postgres@postgres:5432/mlflow --default-artifact-root s3://mlflow-artifacts --serve-artifacts"
+    command:
+      - bash
+      - -c
+      - |
+        pip install -q mlflow==2.21.3 psycopg2-binary boto3 &&
+        mlflow server \
+          --host 0.0.0.0 \
+          --port 5001 \
+          --backend-store-uri postgresql://postgres:postgres@postgres:5432/mlflow \
+          --default-artifact-root s3://mlflow-artifacts
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: admin
@@ -68,58 +162,136 @@ services:
       minio:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 15
+      start_period: 300s    # pip install takes 3-5 minutes on first run
+
+  # ---------------------------------------------------------------------------
+  # Airflow — one-time initialisation (creates DB, admin user, then exits)
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    container_name: ml-airflow-init
+    # Airflow 3.0: _AIRFLOW_* env vars trigger DB migration + admin user creation.
+    # NOTE: This environment block REPLACES (not merges) x-airflow-common's environment,
+    # so we re-declare the shared keys needed for DB access and pool creation.
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: "ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
+      AIRFLOW__WEBSERVER__SECRET_KEY: "ml-eng-platform-secret"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__API_AUTH__JWT_SECRET: "cF1A7mWl4zbZNwUyySQHxg"
+      AIRFLOW__CORE__INTERNAL_API_SECRET_KEY: "dOMrAGQ+s6g0hWCK+u0Qxvn+fP4MJEvMlHlCC+ffAvo="
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin123
+      _AIRFLOW_WWW_USER_FIRSTNAME: Admin
+      _AIRFLOW_WWW_USER_LASTNAME: User
+      _AIRFLOW_WWW_USER_EMAIL: admin@mleng.local
+      _AIRFLOW_WWW_USER_ROLE: Admin
+    # Create required Airflow pools so pipelines run without manual setup
+    command: >
+      bash -c "
+        airflow db migrate &&
+        airflow pools set binance_api_pool 5 'Rate limiter for Binance API calls' &&
+        airflow pools set postgres_pool 5 'Rate limiter for PostgreSQL load operations' &&
+        airflow pools set ml_training_pool 3 'ML training concurrency limit' &&
+        echo 'Init complete'
+      "
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # Airflow Scheduler — picks up DAGs and runs them
+  # ---------------------------------------------------------------------------
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: ml-airflow-scheduler
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8974/health"]
       interval: 30s
       timeout: 10s
       retries: 5
+      start_period: 360s    # pip install of ML packages takes 5-8 min on first run
+    restart: unless-stopped
 
-  # Inference API (Production API)
+  # ---------------------------------------------------------------------------
+  # Airflow DAG Processor — Airflow 3.0 requires this as a separate process
+  # ---------------------------------------------------------------------------
+  airflow-dag-processor:
+    <<: *airflow-common
+    container_name: ml-airflow-dag-processor
+    command: dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Airflow Webserver — UI at http://localhost:8080  (admin / admin123)
+  # ---------------------------------------------------------------------------
+  # In Airflow 3.0 the webserver was renamed to api-server
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: ml-airflow-webserver
+    command: api-server
+    ports:
+      - "8080:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 360s    # pip install of ML packages takes 5-8 min on first run
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Inference API — FastAPI prediction service
+  # Start separately AFTER training pipeline completes and models are promoted:
+  #   docker compose --profile inference up -d api
+  # ---------------------------------------------------------------------------
   api:
+    profiles: [inference]
     build:
       context: .
       dockerfile: docker/Dockerfile.inference
     container_name: ml-inference-api
     environment:
-      # Environment
       ENVIRONMENT: development
       DEBUG: "true"
-
-      # Database
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: crypto_trading
       DB_USER: postgres
       DB_PASSWORD: postgres
-
-      # Redis
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_DB: 0
-
-      # MinIO
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: admin
       MINIO_SECRET_KEY: admin123
       MINIO_SECURE: "false"
-
-      # MLflow
       MLFLOW_TRACKING_URI: http://mlflow:5001
       MLFLOW_EXPERIMENT_PREFIX: crypto_multi_models
-
-      # Binance - Use JSON array format
       BINANCE_SYMBOLS: '["BTCUSDT","ETHUSDT","BNBUSDT"]'
-
-      # API
       API_HOST: 0.0.0.0
       API_PORT: 8000
       API_WORKERS: 2
       API_RELOAD: "true"
       API_LOG_LEVEL: debug
       API_CORS_ORIGINS: '["*"]'
-
-      # Monitoring
       MONITORING_ENABLE_METRICS: "true"
-      MONITORING_LOG_LEVEL: DEBUG
     ports:
       - "8000:8000"
     depends_on:
@@ -130,7 +302,6 @@ services:
       mlflow:
         condition: service_healthy
     volumes:
-      # Mount source code for hot reload in development
       - ./app:/app
       - ./src:/src
       - ./dags:/dags
@@ -141,7 +312,9 @@ services:
       retries: 3
       start_period: 40s
 
-  # Prometheus - Metrics collection
+  # ---------------------------------------------------------------------------
+  # Prometheus — metrics collection
+  # ---------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:latest
     container_name: ml-prometheus
@@ -154,12 +327,12 @@ services:
       - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    depends_on:
-      - api
+      - /Volumes/T7Shield/ml-eng-data/prometheus:/prometheus
     restart: unless-stopped
 
-  # Grafana - Visualization
+  # ---------------------------------------------------------------------------
+  # Grafana — dashboards at http://localhost:3000  (admin / admin)
+  # ---------------------------------------------------------------------------
   grafana:
     image: grafana/grafana:latest
     container_name: ml-grafana
@@ -170,18 +343,21 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - grafana_data:/var/lib/grafana
+      - /Volumes/T7Shield/ml-eng-data/grafana:/var/lib/grafana
       - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
-    depends_on:
-      - prometheus
     restart: unless-stopped
 
-volumes:
-  postgres_data:
-  minio_data:
-  prometheus_data:
-  grafana_data:
+# ---------------------------------------------------------------------------
+# All stateful data stored on external SSD (APFS, /Volumes/T7Shield/ml-eng-data/):
+#   ├── postgres/         ← PostgreSQL databases (ETL data + Airflow metadata)
+#   ├── minio/            ← Raw crypto files + model artifacts (GBs of data)
+#   ├── prometheus/       ← Metrics time-series history
+#   ├── grafana/          ← Dashboard state
+#   └── airflow/
+#       ├── logs/         ← Task execution logs
+#       └── plugins/      ← Custom Airflow plugins
+# ---------------------------------------------------------------------------
 
 networks:
   default:

@@ -43,10 +43,11 @@ You don't need an ML background to run this. You do need basic comfort with the 
 
 | Component | Status | Notes |
 |---|---|---|
-| ETL Pipeline (data collection) | ✅ Working | 2.25M records loaded and verified |
-| Infrastructure (databases, storage, monitoring) | ✅ Working | 18 services running on Kubernetes |
+| ETL Pipeline (data collection) | ✅ Working | ~2.28M records, fully automated end-to-end |
+| Infrastructure (Docker Compose) | ✅ Working | One command, zero manual steps |
+| Infrastructure (Kubernetes) | ✅ Working | Helm-based deployment |
 | ML Training Pipeline | ⏳ Testing in progress | Code deployed, end-to-end test pending |
-| Inference API (predictions) | 📋 Next up | Deploys after training pipeline is validated |
+| Inference API (predictions) | 📋 Next up | Start with `docker compose --profile inference up -d api` after training |
 
 ---
 
@@ -91,22 +92,40 @@ Good for exploring the system locally.
 git clone <repo-url>
 cd ml-eng-with-ops
 
-# Start all services
-docker-compose up -d
+# Start all services (databases, Airflow, MLflow, MinIO, monitoring)
+docker compose up -d
+```
 
-# Run the end-to-end demo (trains a model and makes predictions)
-pip install mlflow scikit-learn requests minio
-python3 scripts/demo-e2e-workflow.py
+**What happens automatically on first start:**
+- PostgreSQL creates all databases (`airflow`, `mlflow`, `crypto`)
+- MinIO creates the required buckets (`crypto-raw-data`, `crypto-features`, `mlflow-artifacts`)
+- Airflow runs DB migrations and creates all required task pools (`binance_api_pool`, `postgres_pool`, `ml_training_pool`)
+
+> **First run takes 8–12 minutes.** Airflow and MLflow install ~500MB of Python ML libraries (scikit-learn, LightGBM, XGBoost, etc.) at startup. You will see `(health: starting)` or `(unhealthy)` in Docker Desktop during this time — this is normal. The services work even while Docker shows "unhealthy".
+
+**How to know when it's actually ready:**
+
+```bash
+# This endpoint returns JSON when Airflow is fully up (ignore Docker's health status display)
+curl http://localhost:8080/api/v2/monitor/health
+
+# MLflow
+curl http://localhost:5001/health
+```
+
+When Airflow is ready, the response looks like:
+```json
+{"metadatabase":{"status":"healthy"},"scheduler":{"status":"healthy"},"dag_processor":{"status":"healthy"}}
 ```
 
 **Open the dashboards:**
 
 | Service | URL | Login |
 |---|---|---|
+| Airflow (pipeline scheduler) | http://localhost:8080 | admin / admin123 |
 | MLflow (model registry) | http://localhost:5001 | no login |
 | Grafana (monitoring) | http://localhost:3000 | admin / admin |
 | MinIO (file storage) | http://localhost:9001 | admin / admin123 |
-| API docs | http://localhost:8000/docs | no login |
 | Prometheus (raw metrics) | http://localhost:9090 | no login |
 
 ---
@@ -123,17 +142,21 @@ python3 scripts/demo-e2e-workflow.py
 git clone <repo-url>
 cd ml-eng-with-ops
 
-# Deploy all infrastructure (takes 5-10 minutes)
+# Deploy all infrastructure
+# First run takes 20-30 minutes — it builds a custom Docker image with all ML libraries
 ./scripts/k8s-bootstrap.sh --infra-only
 
 # Check everything is running
 ./scripts/k8s-bootstrap.sh --status
 ```
 
+> **What happens during first run:** The script automatically starts a local Docker registry, builds a custom Airflow image (based on `apache/airflow:3.0.2` with LightGBM, XGBoost, MLflow, etc. pre-installed), pushes it to the local registry, then deploys all services via Helm. Subsequent runs skip the build if the image already exists.
+
 **Access the services** (port-forward to your laptop):
 
 ```bash
 # Airflow — pipeline scheduler
+# Note: Airflow 3.0 uses 'airflow-api-server' (older versions used 'airflow-webserver')
 kubectl port-forward -n ml-pipeline svc/airflow-api-server 8080:8080
 # Open: http://localhost:8080  (admin / admin123)
 
@@ -154,15 +177,38 @@ kubectl port-forward -n ml-pipeline svc/minio 9001:9001
 
 ## Running the ETL Pipeline
 
-The ETL pipeline fetches 2.25 million crypto records across 10 symbols. It has been fully tested.
+The ETL pipeline fetches ~2.28 million crypto records across 10 symbols. It has been fully validated end-to-end.
+
+> **Note:** DAGs start paused by default so they don't run before infrastructure is ready. Once Airflow is healthy (8–12 min after startup), unpause and trigger the pipeline.
 
 **Via Airflow UI:**
-1. Open http://localhost:8080
+1. Open http://localhost:8080 and log in with `admin / admin123`
 2. Find the `etl_crypto_data_pipeline` DAG
-3. Toggle it to "On", then click the play button (▶)
-4. Watch tasks complete in the Grid view (~15-20 minutes)
+3. Toggle it to "On" (the toggle on the left), then click the play button (▶)
+4. Watch tasks complete in the Grid view — takes ~15–20 minutes to fetch all historical data
 
 **Via command line:**
+```bash
+# Get an auth token
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# Unpause and trigger
+curl -X PATCH http://localhost:8080/api/v2/dags/etl_crypto_data_pipeline \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"is_paused": false}'
+
+curl -X POST http://localhost:8080/api/v2/dags/etl_crypto_data_pipeline/dagRuns \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"logical_date\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+```
+
+**Via Airflow UI (Kubernetes):**
+1. Open http://localhost:8080 after port-forwarding (see K8s section above)
+2. Same steps as above
+
+**Via command line (Kubernetes only):**
 ```bash
 kubectl exec -n ml-pipeline deployment/airflow-scheduler -- \
   airflow dags trigger etl_crypto_data_pipeline
@@ -170,6 +216,11 @@ kubectl exec -n ml-pipeline deployment/airflow-scheduler -- \
 
 **Verify data loaded:**
 ```bash
+# Docker Compose
+docker exec ml-postgres psql -U crypto -d crypto \
+  -c "SELECT symbol, COUNT(*) FROM crypto_data GROUP BY symbol ORDER BY symbol;"
+
+# Kubernetes
 kubectl exec -n ml-pipeline postgresql-0 -- \
   psql -U postgres -d crypto -c \
   "SELECT symbol, COUNT(*) FROM crypto_data GROUP BY symbol ORDER BY symbol;"
