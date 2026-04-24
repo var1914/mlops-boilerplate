@@ -62,28 +62,29 @@ primary:
         \c crypto
 
         -- Create crypto_data table for ETL pipeline
+        -- Schema matches loader.py exactly (trades_count, buy_ratio, batch_id)
         CREATE TABLE IF NOT EXISTS crypto_data (
             id SERIAL PRIMARY KEY,
-            symbol VARCHAR(20) NOT NULL,
+            symbol TEXT NOT NULL,
             open_time BIGINT NOT NULL,
-            open_price NUMERIC(20, 8) NOT NULL,
-            high_price NUMERIC(20, 8) NOT NULL,
-            low_price NUMERIC(20, 8) NOT NULL,
-            close_price NUMERIC(20, 8) NOT NULL,
-            volume NUMERIC(30, 8) NOT NULL,
             close_time BIGINT NOT NULL,
-            quote_volume NUMERIC(30, 8) NOT NULL,
-            num_trades INTEGER NOT NULL,
-            taker_buy_base NUMERIC(30, 8) NOT NULL,
-            taker_buy_quote NUMERIC(30, 8) NOT NULL,
+            open_price REAL NOT NULL,
+            high_price REAL NOT NULL,
+            low_price REAL NOT NULL,
+            close_price REAL NOT NULL,
+            volume REAL NOT NULL,
+            quote_volume REAL NOT NULL,
+            trades_count INTEGER NOT NULL,
+            buy_ratio REAL,
+            batch_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(symbol, open_time)
         );
 
         -- Create indexes for efficient querying
-        CREATE INDEX IF NOT EXISTS idx_crypto_symbol ON crypto_data(symbol);
-        CREATE INDEX IF NOT EXISTS idx_crypto_open_time ON crypto_data(open_time);
-        CREATE INDEX IF NOT EXISTS idx_crypto_symbol_time ON crypto_data(symbol, open_time);
+        CREATE INDEX IF NOT EXISTS idx_crypto_data_symbol ON crypto_data(symbol);
+        CREATE INDEX IF NOT EXISTS idx_crypto_data_open_time ON crypto_data(open_time);
+        CREATE INDEX IF NOT EXISTS idx_crypto_data_symbol_time ON crypto_data(symbol, open_time DESC);
 
         -- Grant permissions to crypto user
         GRANT ALL PRIVILEGES ON TABLE crypto_data TO crypto;

@@ -121,3 +121,13 @@ env:
     value: "6379"
   - name: REDIS_PASSWORD
     value: redis123
+  # Airflow 3.0: task SDK subprocesses must call back to the api-server over HTTP.
+  # Default is localhost:8080 which fails when scheduler and api-server are separate pods.
+  - name: AIRFLOW__CORE__EXECUTION_API_SERVER_URL
+    value: "http://airflow-api-server:8080/execution/"
+  # Shared JWT signing key — scheduler signs tokens, api-server validates them.
+  # Without this each pod generates its own random key → "Signature verification failed".
+  - name: AIRFLOW__API_AUTH__JWT_SECRET
+    value: "cF1A7mWl4zbZNwUyySQHxg"
+  - name: AIRFLOW__CORE__INTERNAL_API_SECRET_KEY
+    value: "dOMrAGQ+s6g0hWCK+u0Qxvn+fP4MJEvMlHlCC+ffAvo="

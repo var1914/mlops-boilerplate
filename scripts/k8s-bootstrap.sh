@@ -432,6 +432,7 @@ GRANT USAGE, SELECT ON SEQUENCE session_id_seq TO airflow;
     log_info "Creating Airflow pools..."
     kubectl exec -n "$NAMESPACE" deployment/airflow-scheduler -- airflow pools set binance_api_pool 5 "Binance API rate limiting pool" 2>/dev/null || true
     kubectl exec -n "$NAMESPACE" deployment/airflow-scheduler -- airflow pools set postgres_pool 10 "PostgreSQL connection pool" 2>/dev/null || true
+    kubectl exec -n "$NAMESPACE" deployment/airflow-scheduler -- airflow pools set ml_training_pool 3 "ML training concurrency limit" 2>/dev/null || true
 
     # Step 4: Restart API server to pick up session table
     log_info "Restarting Airflow API server..."
