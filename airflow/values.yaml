@@ -4,7 +4,7 @@
 images:
   airflow:
     repository: localhost:5050/custom-airflow
-    tag: 0.0.8
+    tag: 0.0.10
     pullPolicy: Always
 
 # Executor
@@ -19,6 +19,20 @@ webserver:
   waitForMigrations:
     enabled: false
 
+# Shared initContainer — runs as root before every Airflow component starts,
+# ensures the log PVC directory is writable by uid 50000 (airflow user).
+# Applied to scheduler, dag-processor, api-server, triggerer, AND task pods.
+extraInitContainers:
+  - name: fix-log-perms
+    image: localhost:5050/custom-airflow:0.0.10
+    imagePullPolicy: Always
+    securityContext:
+      runAsUser: 0
+    command: ["sh", "-c", "chmod -R 777 /opt/airflow/logs && chown -R 50000:0 /opt/airflow/logs"]
+    volumeMounts:
+      - name: logs
+        mountPath: /opt/airflow/logs
+
 # Scheduler
 scheduler:
   waitForMigrations:
@@ -28,6 +42,8 @@ scheduler:
 triggerer:
   waitForMigrations:
     enabled: false
+  persistence:
+    enabled: false    # use shared logs.persistence.existingClaim instead
 
 # Dag Processor
 dagProcessor:
@@ -49,11 +65,12 @@ workers:
   persistence:
     enabled: true
 
-# Logs - disabled because local-path provisioner doesn't support ReadWriteMany
-# For production, use cloud storage (S3/GCS) for remote logging
+# Logs - local-path is ReadWriteOnce, but all Airflow pods land on the same node
+# (desktop-worker) so multiple pods CAN mount the same RWO PVC simultaneously.
 logs:
   persistence:
-    enabled: false
+    enabled: true
+    existingClaim: airflow-logs-pvc
 
 # Disable built-in PostgreSQL - use external
 postgresql:
@@ -83,7 +100,6 @@ config:
     load_examples: "False"
     dags_folder: /opt/airflow/dags/airflow_dags
   database:
-    # Increase migration wait timeout from default 60 to 300 seconds
     migrations_wait_timeout: 300
   logging:
     remote_logging: "False"
@@ -92,7 +108,7 @@ config:
 # Environment variables (applied to all Airflow components)
 env:
   - name: PYTHONPATH
-    value: /opt/airflow/src:/opt/airflow/dags
+    value: /opt/airflow/dags:/opt/airflow/dags/ml:/opt/airflow/src:/opt/airflow
   - name: AIRFLOW__LOGGING__BASE_LOG_FOLDER
     value: /opt/airflow/logs
   - name: AIRFLOW__DATABASE__MIGRATIONS_WAIT_TIMEOUT
@@ -125,9 +141,17 @@ env:
   # Default is localhost:8080 which fails when scheduler and api-server are separate pods.
   - name: AIRFLOW__CORE__EXECUTION_API_SERVER_URL
     value: "http://airflow-api-server:8080/execution/"
-  # Shared JWT signing key — scheduler signs tokens, api-server validates them.
-  # Without this each pod generates its own random key → "Signature verification failed".
+  # JWT signing key — must match the airflow-jwt-secret K8s secret.
+  # The bootstrap script pre-patches that secret to this same value after helm install,
+  # so both are identical and it doesn't matter which env var Kubernetes picks.
   - name: AIRFLOW__API_AUTH__JWT_SECRET
     value: "cF1A7mWl4zbZNwUyySQHxg"
   - name: AIRFLOW__CORE__INTERNAL_API_SECRET_KEY
     value: "dOMrAGQ+s6g0hWCK+u0Qxvn+fP4MJEvMlHlCC+ffAvo="
+  # MLflow artifact storage — task pods need S3 creds to write model files to MinIO
+  - name: MLFLOW_S3_ENDPOINT_URL
+    value: "http://minio:9000"
+  - name: AWS_ACCESS_KEY_ID
+    value: admin
+  - name: AWS_SECRET_ACCESS_KEY
+    value: admin123

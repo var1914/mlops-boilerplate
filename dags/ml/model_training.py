@@ -31,8 +31,15 @@ from mlflow.models.signature import infer_signature
 from mlflow.types.schema import Schema, ColSpec
 import tempfile
 
-# from automated_data_validation import DataValidationSuite  # Not needed for inference
+from automated_data_validation import DataValidationSuite
 from src.config import get_settings
+
+# Suppress urllib3 MinIO header parsing noise and MLflow store INFO on stderr
+import warnings
+warnings.filterwarnings("ignore", message="Failed to parse headers", module="urllib3")
+warnings.filterwarnings("ignore", message=".*HeaderParsingError.*", module="urllib3")
+logging.getLogger("mlflow.store.model_registry.abstract_store").setLevel(logging.WARNING)
+logging.getLogger("mlflow.tracking.client").setLevel(logging.WARNING)
 
 # Load configuration from environment
 settings = get_settings()
@@ -141,8 +148,11 @@ class MLflowModelRegistry:
             # 3. Log feature importance (if available)
             self._log_feature_importance(model, feature_cols, algorithm)
             
-            # 4. Create model signature
-            signature = infer_signature(features, target)
+            # 4. Create model signature — cast int cols to float64 to avoid schema warning
+            features_for_sig = features.copy()
+            int_cols = features_for_sig.select_dtypes(include='integer').columns
+            features_for_sig[int_cols] = features_for_sig[int_cols].astype('float64')
+            signature = infer_signature(features_for_sig, target)
             
             # 5. Log model with correct registered name format
             registered_model_name = f"crypto_{algorithm}_{task_name}_{symbol}"
@@ -493,46 +503,44 @@ class ModelTrainingPipeline:
             raise
 
     def load_features_from_dvc_fallback(self, version_id):
-        """Load features using DVC metadata but falling back to MinIO if needed"""
+        """Load features using DVC metadata, falling back to MinIO path if not in DB.
+        version_id format: features_{SYMBOL}_{YYYYMMDD}
+        """
+        metadata = None
+
+        # Try DB metadata first — gracefully skip if table missing or version not found
         try:
-            # Get version metadata from database
             version_info = self.get_dvc_version_metadata(version_id)
             metadata = version_info['metadata']
-            
-            # Try to load from original MinIO storage path if available
             if metadata and 'source_storage_path' in metadata:
                 storage_path = metadata['source_storage_path']
-                self.logger.info(f"Loading features for {version_id} from original MinIO path: {storage_path}")
-                
+                self.logger.info(f"Loading features from DB metadata path: {storage_path}")
                 response = self.minio_client.get_object('crypto-features', storage_path)
                 df = pd.read_parquet(BytesIO(response.read()))
                 response.close()
                 response.release_conn()
-                
                 return df, metadata
-            else:
-                # Fallback: try to construct storage path from version_id
-                # version_id format: features_SYMBOL_timestamp_hash
-                parts = version_id.split('_')
-                if len(parts) >= 3 and parts[0] == 'features':
-                    symbol = parts[1]
-                    timestamp = parts[2]
-                    date_partition = timestamp[:8]  # YYYYMMDD
-                    storage_path = f"features/{date_partition}/{symbol}.parquet"
-                    
-                    self.logger.info(f"Trying fallback storage path: {storage_path}")
-                    response = self.minio_client.get_object('crypto-features', storage_path)
-                    df = pd.read_parquet(BytesIO(response.read()))
-                    response.close()
-                    response.release_conn()
-                    
-                    return df, metadata
-                else:
-                    raise ValueError(f"Cannot determine storage path for version {version_id}")
-                    
-        except Exception as e:
-            self.logger.error(f"Failed to load features for version {version_id}: {e}")
-            raise
+        except Exception:
+            self.logger.info(f"DVC metadata not found for {version_id}, using MinIO path fallback")
+
+        # Fallback: construct MinIO path from version_id (features_{SYMBOL}_{YYYYMMDD})
+        parts = version_id.split('_')
+        if len(parts) >= 3 and parts[0] == 'features':
+            symbol = parts[1]
+            date_partition = parts[2][:8]  # YYYYMMDD
+            storage_path = f"features/{date_partition}/{symbol}.parquet"
+            self.logger.info(f"Loading features from MinIO: {storage_path}")
+            try:
+                response = self.minio_client.get_object('crypto-features', storage_path)
+                df = pd.read_parquet(BytesIO(response.read()))
+                response.close()
+                response.release_conn()
+                return df, metadata
+            except Exception as e:
+                self.logger.error(f"Failed to load features from MinIO path {storage_path}: {e}")
+                raise
+
+        raise ValueError(f"Cannot determine storage path for version_id: {version_id}")
 
     def load_features_and_targets_from_dvc(self, feature_version_id, target_version_id=None):
         """Load both features and targets using DVC metadata"""
@@ -664,7 +672,7 @@ class ModelTrainingPipeline:
         
         # Fill remaining missing values
         if features_final.isnull().sum().sum() > 0:
-            features_final = features_final.fillna(method='ffill').fillna(features_final.median())
+            features_final = features_final.ffill().fillna(features_final.median())
         
         # For classification tasks, ensure target is properly encoded
         if task_type in ['classification_binary', 'classification_multi']:

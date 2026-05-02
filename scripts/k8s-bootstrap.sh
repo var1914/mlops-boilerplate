@@ -232,6 +232,28 @@ deploy_mlflow() {
         --values $ROOT_DIR/mlflow/values.yaml \
         --wait --timeout 10m"
 
+    # The community-charts/mlflow chart hardcodes --gunicorn-opts by default.
+    # MLflow 3.x forbids --allowed-hosts (needed for K8s DNS access) with --gunicorn-opts.
+    # Patch: remove --gunicorn-opts and add --allowed-hosts=* so task pods can reach MLflow
+    # via service name (ml-mlflow) without triggering DNS rebinding protection.
+    log_info "Patching MLflow deployment to enable --allowed-hosts=* (removes gunicorn-opts)..."
+    local MLFLOW_BACKEND_URI
+    MLFLOW_BACKEND_URI=$(kubectl get deployment "${RELEASE_PREFIX}-mlflow" -n "$NAMESPACE" \
+        -o jsonpath='{.spec.template.spec.containers[0].args}' | \
+        python3 -c "import sys,json; args=json.load(sys.stdin); print(next((a for a in args if 'backend-store-uri' in a), '--backend-store-uri=postgresql://mlflow:mlflow123@postgresql:5432/mlflow'))")
+
+    kubectl patch deployment "${RELEASE_PREFIX}-mlflow" -n "$NAMESPACE" --type=json -p="[
+      {\"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/args\", \"value\": [
+        \"server\",
+        \"--host=0.0.0.0\",
+        \"--port=5000\",
+        \"${MLFLOW_BACKEND_URI}\",
+        \"--default-artifact-root=s3://mlflow-artifacts/\",
+        \"--allowed-hosts=*\"
+      ]}
+    ]"
+    kubectl rollout status deployment/${RELEASE_PREFIX}-mlflow -n "$NAMESPACE" --timeout=120s
+
     wait_for_pods "app.kubernetes.io/name=mlflow"
     log_success "MLflow deployed."
 }
@@ -311,6 +333,7 @@ setup_minio_buckets() {
             mc mb --ignore-existing myminio/crypto-raw-data && \
             mc mb --ignore-existing myminio/crypto-features && \
             mc mb --ignore-existing myminio/mlflow-artifacts && \
+            mc mb --ignore-existing myminio/crypto-models && \
             echo 'Buckets created successfully'
         " 2>/dev/null || log_info "MinIO buckets may already exist"
 
@@ -428,18 +451,126 @@ GRANT USAGE, SELECT ON SEQUENCE session_id_seq TO airflow;
     log_info "Running FAB database migration..."
     kubectl exec -n "$NAMESPACE" deployment/airflow-api-server -- airflow fab-db migrate 2>/dev/null || log_info "FAB migration may have already run"
 
-    # Step 3: Create Airflow pools for ETL pipeline
+    # Step 3: Patch airflow-jwt-secret to our fixed value so it matches the AIRFLOW__API_AUTH__JWT_SECRET
+    # env var set in values.yaml. Without this, --force upgrades regenerate a new random secret
+    # while our env var stays the same → "Signature verification failed" in task pods.
+    log_info "Patching JWT secret to fixed value for consistency..."
+    local JWT_B64
+    JWT_B64=$(echo -n "cF1A7mWl4zbZNwUyySQHxg" | base64)
+    kubectl patch secret airflow-jwt-secret -n "$NAMESPACE" \
+        --type=json \
+        -p="[{\"op\":\"replace\",\"path\":\"/data/jwt-secret\",\"value\":\"$JWT_B64\"}]" 2>/dev/null || true
+
+    # Step 4: Create Airflow pools for ETL pipeline
     log_info "Creating Airflow pools..."
     kubectl exec -n "$NAMESPACE" deployment/airflow-scheduler -- airflow pools set binance_api_pool 5 "Binance API rate limiting pool" 2>/dev/null || true
     kubectl exec -n "$NAMESPACE" deployment/airflow-scheduler -- airflow pools set postgres_pool 10 "PostgreSQL connection pool" 2>/dev/null || true
     kubectl exec -n "$NAMESPACE" deployment/airflow-scheduler -- airflow pools set ml_training_pool 3 "ML training concurrency limit" 2>/dev/null || true
 
-    # Step 4: Restart API server to pick up session table
+    # Step 5: Restart API server to pick up session table
     log_info "Restarting Airflow API server..."
     kubectl rollout restart deployment/airflow-api-server -n "$NAMESPACE"
     kubectl rollout status deployment/airflow-api-server -n "$NAMESPACE" --timeout=60s
 
     log_success "Airflow post-deployment configuration complete."
+}
+
+setup_airflow_log_storage() {
+    log_step "Setting up Airflow Log Storage (hostPath PV)"
+
+    local LOG_HOST_PATH="/private/tmp/airflow-logs"
+
+    # Check if PVC already bound
+    if kubectl get pvc airflow-logs-pvc -n "$NAMESPACE" &>/dev/null && \
+       kubectl get pvc airflow-logs-pvc -n "$NAMESPACE" -o jsonpath='{.status.phase}' | grep -q "Bound"; then
+        log_info "Airflow log PVC already bound. Skipping..."
+        return 0
+    fi
+
+    # Step 1: Create host directory (virtiofs-mounted into Docker Desktop Linux VM)
+    log_info "Creating log directory at $LOG_HOST_PATH..."
+    mkdir -p "$LOG_HOST_PATH"
+
+    # Step 2: Apply static PV + PVC (bypasses WaitForFirstConsumer, supports RWX on single node)
+    log_info "Creating static PV and PVC for Airflow logs..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: airflow-logs-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  hostPath:
+    path: $LOG_HOST_PATH
+    type: DirectoryOrCreate
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: airflow-logs-pvc
+  namespace: $NAMESPACE
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: ""
+  volumeName: airflow-logs-pv
+EOF
+
+    # Step 3: Wait for PVC to bind
+    log_info "Waiting for PVC to bind..."
+    local attempts=0
+    until kubectl get pvc airflow-logs-pvc -n "$NAMESPACE" -o jsonpath='{.status.phase}' | grep -q "Bound"; do
+        attempts=$((attempts + 1))
+        if [ $attempts -gt 15 ]; then
+            log_error "airflow-logs-pvc did not bind after 30s"
+            return 1
+        fi
+        sleep 2
+    done
+
+    # Step 4: Fix permissions from inside the cluster (Mac chmod doesn't propagate to Linux VM)
+    log_info "Fixing log directory permissions for Airflow uid 50000..."
+    local AIRFLOW_IMAGE_TAG=$(grep "tag:" "$ROOT_DIR/airflow/values.yaml" | head -1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+    kubectl delete job airflow-log-perms -n "$NAMESPACE" 2>/dev/null || true
+    cat <<EOF | kubectl apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: airflow-log-perms
+  namespace: $NAMESPACE
+spec:
+  ttlSecondsAfterFinished: 120
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 0
+      containers:
+      - name: fix-perms
+        image: localhost:5050/custom-airflow:$AIRFLOW_IMAGE_TAG
+        imagePullPolicy: Always
+        command: ["sh", "-c", "chmod -R 777 /opt/airflow/logs && chown -R 50000:0 /opt/airflow/logs && echo Permissions fixed"]
+        volumeMounts:
+        - name: logs
+          mountPath: /opt/airflow/logs
+      volumes:
+      - name: logs
+        persistentVolumeClaim:
+          claimName: airflow-logs-pvc
+EOF
+    kubectl wait --for=condition=complete job/airflow-log-perms -n "$NAMESPACE" --timeout=60s 2>/dev/null || \
+        log_warn "Permission fix job timed out — Airflow may log a PermissionError on first start but will self-heal via extraInitContainers"
+
+    log_success "Airflow log storage ready at $LOG_HOST_PATH"
 }
 
 deploy_infrastructure() {
@@ -457,6 +588,10 @@ deploy_infrastructure() {
 
     deploy_mlflow
     deploy_monitoring
+
+    # Setup log storage BEFORE Airflow (Helm chart references the PVC)
+    setup_airflow_log_storage
+
     deploy_airflow
 
     # Configure Airflow after deployment (session table, pools, FAB migration)
@@ -626,8 +761,13 @@ cleanup() {
     helm uninstall "${RELEASE_PREFIX}-monitoring" -n "$NAMESPACE" 2>/dev/null || true
     helm uninstall postgresql -n "$NAMESPACE" 2>/dev/null || true
 
+    log_info "Deleting Airflow log PV and PVC..."
+    kubectl delete pvc airflow-logs-pvc -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete pv airflow-logs-pv 2>/dev/null || true
+
     log_info "Deleting migration jobs..."
     kubectl delete job airflow-db-migrate -n "$NAMESPACE" 2>/dev/null || true
+    kubectl delete job airflow-log-perms -n "$NAMESPACE" 2>/dev/null || true
 
     log_info "Deleting API manifests..."
     kubectl delete -k "$K8S_DIR" 2>/dev/null || true

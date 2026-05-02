@@ -284,19 +284,23 @@ class FeatureEngineeringPipeline:
     
     def calculate_cross_symbol_features(self, symbols, reference_symbol='BTCUSDT'):
         """Calculate correlation and relative strength across symbols"""
-        # Get data for all symbols
+        # Get data for all symbols; always include reference_symbol even if not in list
+        symbols_to_fetch = list(symbols)
+        if reference_symbol not in symbols_to_fetch:
+            symbols_to_fetch.append(reference_symbol)
+
         symbol_data = {}
-        for symbol in symbols:
+        for symbol in symbols_to_fetch:
             symbol_data[symbol] = self.get_symbol_data(symbol)
-        
-        # Find common time range
-        common_index = symbol_data[symbols[0]].index
-        for symbol in symbols[1:]:
+
+        # Find common time range across all fetched symbols
+        common_index = symbol_data[symbols_to_fetch[0]].index
+        for symbol in symbols_to_fetch[1:]:
             common_index = common_index.intersection(symbol_data[symbol].index)
         
-        # Align all data to common timeframe
+        # Align all data to common timeframe (include reference symbol even if not in output list)
         aligned_data = {}
-        for symbol in symbols:
+        for symbol in symbols_to_fetch:
             aligned_data[symbol] = symbol_data[symbol].loc[common_index]
         
         # Calculate cross-symbol features

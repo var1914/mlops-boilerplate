@@ -26,9 +26,9 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
     # Install ETL/ML dependencies at container start
     _PIP_ADDITIONAL_REQUIREMENTS: >-
-      psycopg2-binary minio boto3 pandas numpy pyarrow
-      scikit-learn lightgbm xgboost mlflow requests redis
-      prometheus-client pydantic pydantic-settings
+      psycopg2-binary minio boto3 apache-airflow-providers-amazon
+      pandas numpy pyarrow scikit-learn lightgbm xgboost mlflow
+      requests redis prometheus-client pydantic pydantic-settings
     # ETL pipeline env vars (same values as K8s)
     MINIO_ENDPOINT: minio:9000
     MINIO_ACCESS_KEY: admin
@@ -42,7 +42,13 @@ x-airflow-common: &airflow-common
     REDIS_HOST: redis
     REDIS_PORT: "6379"
     REDIS_PASSWORD: ""        # Docker Compose Redis has no auth
-    PYTHONPATH: /opt/airflow/dags:/opt/airflow/src
+    # src/config/settings.py DatabaseConfig reads DB_* prefix — required for ML pipeline
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_NAME: crypto
+    DB_USER: crypto
+    DB_PASSWORD: crypto123
+    PYTHONPATH: /opt/airflow/dags:/opt/airflow/dags/ml:/opt/airflow/src:/opt/airflow
   volumes:
     - ./dags:/opt/airflow/dags          # DAGs live-mounted (editable without rebuild)
     - ./src:/opt/airflow/src
@@ -130,6 +136,7 @@ services:
         mc mb --ignore-existing local/crypto-raw-data &&
         mc mb --ignore-existing local/crypto-features &&
         mc mb --ignore-existing local/mlflow-artifacts &&
+        mc mb --ignore-existing local/crypto-models &&
         echo 'MinIO buckets ready'
       "
     restart: "no"

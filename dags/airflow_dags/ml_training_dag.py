@@ -43,22 +43,21 @@ default_args = {
 
 def run_data_validation(symbols: list, **context) -> dict:
     """Run data validation for training readiness."""
-    from automated_data_validation import DataValidationSuite
+    from automated_data_validation import validate_raw_data
+    from etl.config import DB_CONFIG
 
-    results = {}
-    for symbol in symbols:
-        try:
-            validator = DataValidationSuite(symbol)
-            validation_result = validator.run_all_validations()
-            results[symbol] = {
-                'status': 'passed' if validation_result.get('is_valid', False) else 'failed',
-                'details': validation_result
+    try:
+        results = validate_raw_data(DB_CONFIG, symbols)
+        return {
+            symbol: {
+                'status': 'passed' if r.get('is_valid', True) else 'failed',
+                'details': r
             }
-        except Exception as e:
-            logging.error(f"Validation failed for {symbol}: {e}")
-            results[symbol] = {'status': 'error', 'error': str(e)}
-
-    return results
+            for symbol, r in results.items()
+        }
+    except Exception as e:
+        logging.error(f"Data validation failed: {e}")
+        return {symbol: {'status': 'error', 'error': str(e)} for symbol in symbols}
 
 
 def run_feature_engineering(symbol: str, **context) -> dict:
@@ -73,8 +72,8 @@ def run_feature_engineering(symbol: str, **context) -> dict:
         return {
             'symbol': symbol,
             'status': 'success',
-            'features_generated': result.get('features_count', 0),
-            'targets_created': result.get('targets_created', False)
+            'features_generated': len(result.get('storage_paths', {})),
+            'targets_created': len(result.get('target_paths', {})) > 0
         }
 
     except Exception as e:
@@ -88,22 +87,28 @@ def run_feature_engineering(symbol: str, **context) -> dict:
 
 def train_models_for_symbol(symbol: str, **context) -> dict:
     """Train all models for a symbol."""
+    from datetime import datetime as dt
     from model_training import ModelTrainingPipeline
+    from etl.config import DB_CONFIG
 
     try:
-        pipeline = ModelTrainingPipeline()
+        pipeline = ModelTrainingPipeline(DB_CONFIG)
 
-        # Train models for this symbol
+        # feature_version_id must match the fallback path format:
+        # features_{symbol}_{YYYYMMDD} → loads from crypto-features/features/{YYYYMMDD}/{symbol}.parquet
+        date_str = dt.now().strftime('%Y%m%d')
+        feature_version_id = f"features_{symbol}_{date_str}"
+
         results = pipeline.train_symbol_models(
             symbol=symbol,
+            feature_version_id=feature_version_id,
             tasks_to_train=['return_4step', 'direction_4step', 'volatility_4step'],
-            model_types=['lightgbm', 'xgboost']
         )
 
         return {
             'symbol': symbol,
             'status': 'success',
-            'models_trained': len(results.get('models', [])),
+            'models_trained': len(results.get('trained_models', [])),
             'best_metrics': results.get('best_metrics', {})
         }
 
@@ -117,30 +122,43 @@ def train_models_for_symbol(symbol: str, **context) -> dict:
 
 
 def promote_best_models(**context) -> dict:
-    """Promote best models to staging and production."""
-    from model_promotion import ModelPromotion
+    """Promote all registered crypto models by setting the 'champion' alias on the latest version."""
+    import mlflow
+    from mlflow.tracking import MlflowClient
+    from etl.config import MLFLOW_CONFIG
+
+    mlflow.set_tracking_uri(MLFLOW_CONFIG['tracking_uri'])
+    client = MlflowClient()
+
+    promoted = []
+    failed = []
 
     try:
-        promoter = ModelPromotion()
-
-        # Promote best models to staging
-        staging_results = promoter.promote_models_to_staging()
-
-        # Auto-promote to production if metrics meet threshold
-        production_results = promoter.automated_promotion_with_validation()
+        models = client.search_registered_models(filter_string="name LIKE 'crypto_%'")
+        for model in models:
+            name = model.name
+            try:
+                versions = client.get_latest_versions(name)
+                if not versions:
+                    continue
+                latest = max(versions, key=lambda v: int(v.version))
+                client.set_registered_model_alias(name, "champion", latest.version)
+                promoted.append(f"{name}@v{latest.version}")
+                logging.info(f"Promoted {name} v{latest.version} → @champion")
+            except Exception as e:
+                failed.append(name)
+                logging.error(f"Failed to promote {name}: {e}")
 
         return {
             'status': 'success',
-            'staging_promoted': staging_results.get('promoted_count', 0),
-            'production_promoted': production_results.get('promoted_count', 0)
+            'promoted_count': len(promoted),
+            'promoted': promoted,
+            'failed': failed
         }
 
     except Exception as e:
         logging.error(f"Model promotion failed: {e}")
-        return {
-            'status': 'failed',
-            'error': str(e)
-        }
+        return {'status': 'failed', 'error': str(e)}
 
 
 def reload_inference_api(**context) -> dict:

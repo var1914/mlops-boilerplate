@@ -5,6 +5,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Ready-blue)](https://www.docker.com/)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326CE5)](https://kubernetes.io/)
 [![Airflow](https://img.shields.io/badge/Airflow-3.0-017CEE)](https://airflow.apache.org/)
+[![MLflow](https://img.shields.io/badge/MLflow-3.x-0194E2)](https://mlflow.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -21,7 +22,7 @@ This is a **ready-to-run platform** that shows how a real ML system works end-to
 Think of it as a reference implementation: a working system you can deploy, learn from, and adapt to your own data and use case.
 
 ```
-Raw Data  →  Store  →  Train Models  →  Serve Predictions  →  Monitor
+Raw Data  →  Store  →  Feature Engineering  →  Train Models  →  Register  →  Serve  →  Monitor
 ```
 
 ---
@@ -45,9 +46,10 @@ You don't need an ML background to run this. You do need basic comfort with the 
 |---|---|---|
 | ETL Pipeline (data collection) | ✅ Working | ~2.28M records, fully automated end-to-end |
 | Infrastructure (Docker Compose) | ✅ Working | One command, zero manual steps |
-| Infrastructure (Kubernetes) | ✅ Working | Helm-based deployment |
-| ML Training Pipeline | ⏳ Testing in progress | Code deployed, end-to-end test pending |
-| Inference API (predictions) | 📋 Next up | Start with `docker compose --profile inference up -d api` after training |
+| Infrastructure (Kubernetes) | ✅ Working | Helm-based, one command, fully reproducible |
+| ML Training Pipeline | ✅ Working | 60 models trained and registered in MLflow |
+| Model Promotion | ✅ Working | All models tagged `@champion` alias automatically |
+| Inference API (predictions) | 📋 Next up | Start after training: `docker compose --profile inference up -d api` |
 
 ---
 
@@ -63,14 +65,23 @@ Binance API  →  MinIO (raw file storage)  →  PostgreSQL (database)
 ```
 
 ### 2. ML Training Pipeline — runs nightly at 2 AM
-Reads the database, computes 80+ features (moving averages, momentum indicators, etc.), trains two model types (LightGBM and XGBoost) for each symbol, and registers the best models.
+Reads the database, computes 80+ features (moving averages, momentum indicators, volatility, etc.), trains LightGBM and XGBoost models for each symbol, evaluates them, and registers the best versions in MLflow.
 
 ```
 PostgreSQL  →  Feature Engineering  →  Model Training  →  MLflow (model registry)
+                                            ↓
+                              10 symbols × 3 tasks × 2 algorithms = 60 models
 ```
 
+**What it trains per symbol:**
+- `return_4step` — predicted price return over the next hour (regression)
+- `direction_4step` — predicted price direction up/down (classification)
+- `volatility_4step` — predicted price volatility over the next hour (regression)
+
+After training, all models are promoted to the **`@champion`** alias in MLflow — making them queryable by name at inference time.
+
 ### 3. Inference API — always running
-Loads the latest approved models from MLflow and serves predictions over HTTP. Scales automatically under load.
+Loads the `@champion` models from MLflow and serves predictions over HTTP. Scales automatically under load.
 
 ```
 HTTP Request  →  Feature Generation  →  Model Prediction  →  HTTP Response
@@ -98,15 +109,15 @@ docker compose up -d
 
 **What happens automatically on first start:**
 - PostgreSQL creates all databases (`airflow`, `mlflow`, `crypto`)
-- MinIO creates the required buckets (`crypto-raw-data`, `crypto-features`, `mlflow-artifacts`)
+- MinIO creates all required buckets (`crypto-raw-data`, `crypto-features`, `mlflow-artifacts`, `crypto-models`)
 - Airflow runs DB migrations and creates all required task pools (`binance_api_pool`, `postgres_pool`, `ml_training_pool`)
 
-> **First run takes 8–12 minutes.** Airflow and MLflow install ~500MB of Python ML libraries (scikit-learn, LightGBM, XGBoost, etc.) at startup. You will see `(health: starting)` or `(unhealthy)` in Docker Desktop during this time — this is normal. The services work even while Docker shows "unhealthy".
+> **First run takes 8–12 minutes.** Airflow and MLflow install ~500MB of Python ML libraries (scikit-learn, LightGBM, XGBoost, etc.) at startup. You will see `(health: starting)` or `(unhealthy)` in Docker Desktop during this time — this is normal.
 
 **How to know when it's actually ready:**
 
 ```bash
-# This endpoint returns JSON when Airflow is fully up (ignore Docker's health status display)
+# Returns JSON when Airflow is fully up (ignore Docker's health status display)
 curl http://localhost:8080/api/v2/monitor/health
 
 # MLflow
@@ -142,21 +153,19 @@ When Airflow is ready, the response looks like:
 git clone <repo-url>
 cd ml-eng-with-ops
 
-# Deploy all infrastructure
-# First run takes 20-30 minutes — it builds a custom Docker image with all ML libraries
+# Deploy everything — first run takes 20-30 minutes (builds custom Docker image)
 ./scripts/k8s-bootstrap.sh --infra-only
 
 # Check everything is running
 ./scripts/k8s-bootstrap.sh --status
 ```
 
-> **What happens during first run:** The script automatically starts a local Docker registry, builds a custom Airflow image (based on `apache/airflow:3.0.2` with LightGBM, XGBoost, MLflow, etc. pre-installed), pushes it to the local registry, then deploys all services via Helm. Subsequent runs skip the build if the image already exists.
+> **What happens during first run:** The script starts a local Docker registry, builds a custom Airflow image (`apache/airflow:3.0.2` + LightGBM, XGBoost, MLflow, OpenMP, etc.), pushes it to the local registry, creates a persistent volume for logs, deploys all services via Helm, and configures Airflow pools. Subsequent runs skip steps that are already complete.
 
 **Access the services** (port-forward to your laptop):
 
 ```bash
 # Airflow — pipeline scheduler
-# Note: Airflow 3.0 uses 'airflow-api-server' (older versions used 'airflow-webserver')
 kubectl port-forward -n ml-pipeline svc/airflow-api-server 8080:8080
 # Open: http://localhost:8080  (admin / admin123)
 
@@ -177,9 +186,9 @@ kubectl port-forward -n ml-pipeline svc/minio 9001:9001
 
 ## Running the ETL Pipeline
 
-The ETL pipeline fetches ~2.28 million crypto records across 10 symbols. It has been fully validated end-to-end.
+The ETL pipeline fetches ~2.28 million crypto records across 10 symbols. It runs automatically on a schedule, but you can trigger it manually too.
 
-> **Note:** DAGs start paused by default so they don't run before infrastructure is ready. Once Airflow is healthy (8–12 min after startup), unpause and trigger the pipeline.
+> **Note:** DAGs start paused by default. Once Airflow is healthy, unpause and trigger the pipeline.
 
 **Via Airflow UI:**
 1. Open http://localhost:8080 and log in with `admin / admin123`
@@ -204,16 +213,6 @@ curl -X POST http://localhost:8080/api/v2/dags/etl_crypto_data_pipeline/dagRuns 
   -d "{\"logical_date\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
 ```
 
-**Via Airflow UI (Kubernetes):**
-1. Open http://localhost:8080 after port-forwarding (see K8s section above)
-2. Same steps as above
-
-**Via command line (Kubernetes only):**
-```bash
-kubectl exec -n ml-pipeline deployment/airflow-scheduler -- \
-  airflow dags trigger etl_crypto_data_pipeline
-```
-
 **Verify data loaded:**
 ```bash
 # Docker Compose
@@ -222,47 +221,91 @@ docker exec ml-postgres psql -U crypto -d crypto \
 
 # Kubernetes
 kubectl exec -n ml-pipeline postgresql-0 -- \
-  psql -U postgres -d crypto -c \
-  "SELECT symbol, COUNT(*) FROM crypto_data GROUP BY symbol ORDER BY symbol;"
+  bash -c "PGPASSWORD=postgres123 psql -U postgres -d crypto \
+  -c 'SELECT symbol, COUNT(*) FROM crypto_data GROUP BY symbol ORDER BY symbol;'"
 ```
 
-Expected output (~2.25M total records across 10 symbols):
+Expected output (~2.28M total records across 10 symbols):
 ```
    symbol    |  count
 -------------+--------
- ADAUSDT     | 250000
- AVAXUSDT    | 186728   ← less history available on Binance
- BNBUSDT     | 250000
- BTCUSDT     | 250000
- DOTUSDT     | 250000
- ETHUSDT     | 250000
- LINKUSDT    | 250000
- MATICUSDT   | 250000
- SOLUSDT     | 250000
- XRPUSDT     | 250000
+ ADAUSDT     | 250001
+ AVAXUSDT    | 195575   ← less history available on Binance
+ BNBUSDT     | 250001
+ BTCUSDT     | 250001
+ DOTUSDT     | 198869
+ ETHUSDT     | 250001
+ LINKUSDT    | 250001
+ MATICUSDT   | 188250
+ SOLUSDT     | 199609
+ XRPUSDT     | 250001
 ```
 
 ---
 
 ## Running the ML Training Pipeline
 
-> Status: Testing in progress
+The ML training pipeline runs nightly at 2 AM automatically after ETL. You can also trigger it manually once ETL has loaded data.
 
+**Via Airflow UI:**
+1. Open http://localhost:8080
+2. Find the `ml_training_pipeline` DAG
+3. Toggle it to "On", then click ▶ to trigger
+
+**Via command line:**
 ```bash
-# Create the training resource pool first (one-time setup)
-kubectl exec -n ml-pipeline deployment/airflow-scheduler -- \
-  airflow pools set ml_training_pool 3 "ML training pool"
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
-# Trigger the training pipeline
-kubectl exec -n ml-pipeline deployment/airflow-scheduler -- \
-  airflow dags trigger ml_training_pipeline
+curl -X PATCH http://localhost:8080/api/v2/dags/ml_training_pipeline \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"is_paused": false}'
+
+curl -X POST http://localhost:8080/api/v2/dags/ml_training_pipeline/dagRuns \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"logical_date\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
 ```
 
-**What it trains:**
+**Pipeline stages:**
+
+```
+validate_data  →  feature_group (×10 symbols, parallel)
+                       ↓
+               training_group (×10 symbols, max 3 concurrent)
+                       ↓
+               promote_models  →  end
+```
+
+Each training task per symbol:
+1. Loads 250K+ feature rows from MinIO
+2. Trains LightGBM with early stopping
+3. Trains XGBoost with early stopping
+4. Logs both models + metrics to MLflow
+5. Registers models in MLflow model registry
+
+After all 10 symbols complete, `promote_models` sets the `@champion` alias on every model's latest version.
+
+**What gets trained:**
 - 10 symbols × 3 prediction tasks × 2 algorithms = **60 models**
-- Tasks: short-term return, medium-term return, direction (up/down)
-- Algorithms: LightGBM and XGBoost
-- All models versioned and tracked in MLflow
+- Training takes ~15–25 minutes total (3 symbols run in parallel, constrained by `ml_training_pool`)
+
+**Verify models registered:**
+```bash
+# Port-forward MLflow first (K8s) or use http://localhost:5001 (Docker Compose)
+kubectl port-forward -n ml-pipeline svc/ml-mlflow 5000:5000
+
+curl -s "http://localhost:5000/api/2.0/mlflow/registered-models/search?max_results=100" | \
+  python3 -c "
+import sys, json
+models = json.load(sys.stdin).get('registered_models', [])
+champion = [m for m in models if any(a['alias']=='champion' for a in m.get('aliases', []))]
+print(f'Total models: {len(models)}')
+print(f'With @champion alias: {len(champion)}')
+"
+```
+
+Expected: 60 models registered, all with `@champion` alias.
 
 ---
 
@@ -314,34 +357,46 @@ Once models are trained and promoted, the inference API is available at `http://
 | `/metrics` | GET | Prometheus metrics |
 | `/docs` | GET | Interactive API documentation (Swagger UI) |
 
+**Start the inference API (Docker Compose):**
+```bash
+docker compose --profile inference up -d api
+```
+
 ---
 
 ## Project Structure
 
 ```
 ml-eng-with-ops/
-├── dags/                        # Pipeline code (runs inside Airflow)
-│   ├── airflow_dags/            # Pipeline definitions (ETL + ML training)
-│   ├── etl/                     # Data extraction and loading logic
-│   ├── feature_eng.py           # Feature engineering (80+ indicators)
-│   ├── model_training.py        # Model training logic
-│   └── model_promotion.py       # Promote models to production
+├── dags/
+│   ├── airflow_dags/            # DAG definitions (ETL + ML training schedules)
+│   │   ├── etl_pipeline_dag.py
+│   │   └── ml_training_dag.py
+│   ├── etl/                     # ETL logic (extraction, loading, config)
+│   └── ml/                      # ML pipeline modules
+│       ├── feature_eng.py       # 80+ technical indicators
+│       ├── model_training.py    # LightGBM + XGBoost training + MLflow logging
+│       ├── model_promotion.py   # Model promotion workflow
+│       ├── automated_data_validation.py
+│       └── inference_feature_pipeline.py
 │
 ├── app/
 │   └── production_api.py        # FastAPI inference service
 │
+├── src/
+│   └── config/                  # Pydantic settings (DB, MinIO, Redis, MLflow)
+│
 ├── scripts/
-│   ├── k8s-bootstrap.sh         # One-command Kubernetes deployment
-│   ├── demo-e2e-workflow.py     # End-to-end demo
-│   └── demo-etl-pipeline.sh    # ETL-only demo
+│   └── k8s-bootstrap.sh         # One-command Kubernetes deployment + teardown
 │
 ├── docker/
-│   ├── Dockerfile.airflow       # Custom Airflow image (includes DAGs)
+│   ├── Dockerfile.airflow       # Custom Airflow image (libgomp1 + all ML deps)
 │   └── Dockerfile.inference     # Inference API image
 │
-├── k8s/                         # Kubernetes config for the inference API
-├── airflow/                     # Airflow configuration (Helm values)
-├── monitoring/                  # Grafana dashboards and Prometheus config
+├── airflow/                     # Airflow Helm values
+├── mlflow/                      # MLflow Helm values
+├── postgresql/                  # PostgreSQL Helm values (correct schema)
+├── monitoring/                  # Grafana dashboards + Prometheus config
 ├── examples/                    # Generic ML use case templates
 ├── docker-compose.yml           # Local development stack
 └── .env.example                 # Environment variable template
@@ -353,10 +408,10 @@ ml-eng-with-ops/
 
 | Tool | What it does in plain English |
 |---|---|
-| **Apache Airflow** | Scheduler — runs pipelines on a schedule, retries failures, shows status |
-| **MLflow** | Model registry — tracks experiments, versions models, manages deployment stages |
+| **Apache Airflow 3.0** | Scheduler — runs pipelines on a schedule, retries failures, shows status |
+| **MLflow 3.x** | Model registry — tracks experiments, versions models, manages aliases (`@champion`) |
 | **PostgreSQL** | Main database — stores all the structured data |
-| **MinIO** | File storage — stores raw data files and model artifacts (like AWS S3, but local) |
+| **MinIO** | File storage — stores raw data files, features, and model artifacts (like AWS S3, but local) |
 | **Redis** | Cache — speeds up repeated lookups during inference |
 | **FastAPI** | Web framework — exposes predictions via HTTP API |
 | **LightGBM / XGBoost** | ML algorithms — the actual models that make predictions |
@@ -374,7 +429,9 @@ ml-eng-with-ops/
 
 **MLflow** — A tool that tracks ML experiments (which parameters were used, what metrics were achieved) and stores model versions in a registry so you can deploy specific versions.
 
-**MinIO** — An open-source file storage system compatible with Amazon S3. Used here to store raw data files and model artifacts.
+**`@champion` alias** — MLflow 3.x way of tagging the current best model version. The inference API loads `@champion` so you can promote a new version without touching code.
+
+**MinIO** — An open-source file storage system compatible with Amazon S3. Used here to store raw data files, engineered features, and model artifacts.
 
 **KubernetesExecutor** — An Airflow setting that runs each pipeline task inside its own isolated container (pod), then deletes it when done. Saves resources and avoids conflicts.
 
@@ -399,12 +456,12 @@ This setup runs on Docker Desktop's single-node Kubernetes, which is fine for le
 - Replace MinIO with cloud object storage (AWS S3, GCP Cloud Storage, Azure Blob)
 - Replace local PostgreSQL with a managed database (AWS RDS, GCP Cloud SQL)
 - Use a cloud container registry (AWS ECR, GCP Artifact Registry) instead of `localhost:5050`
-- Configure remote log storage for Airflow (logs disappear when pods are deleted by default)
-- Enable TLS and secrets management
+- Use a managed Airflow service (AWS MWAA, GCP Composer) or deploy on a multi-node cluster
+- Configure remote log storage for Airflow (S3/GCS) for log persistence across pod restarts
+- Enable TLS and secrets management (Vault, AWS Secrets Manager)
+- Set `helm upgrade` (not `--force`) for rolling updates — preserves K8s secrets and avoids JWT mismatch
 
-See [DEPLOYMENT_SUMMARY.md](DEPLOYMENT_SUMMARY.md) for detailed production recommendations.
-
-For common errors and fixes, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) (Airflow 3.0 specific issues, MinIO connection errors, database schema mismatches, and more).
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common errors (Airflow 3.0 specific issues, MinIO connection errors, JWT signature failures, log persistence on Docker Desktop K8s, and more).
 
 ---
 
@@ -412,10 +469,10 @@ For common errors and fixes, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md) (Airfl
 
 Contributions are welcome. Areas where help is most needed:
 
-- Testing the ML training pipeline end-to-end
-- Adding pytest test coverage
+- Inference API end-to-end validation (loading `@champion` models and serving predictions)
+- Adding pytest test coverage for ETL and ML pipeline modules
 - Cloud provider deployment examples (AWS EKS, GCP GKE, Azure AKS)
-- Additional Grafana dashboards
+- Additional Grafana dashboards (model drift, prediction latency)
 - Support for PyTorch and TensorFlow models
 
 **To contribute:**

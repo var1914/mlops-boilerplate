@@ -58,6 +58,12 @@ artifactRoot:
     awsAccessKeyId: "admin"
     awsSecretAccessKey: "admin123"
 
+# NOTE: --allowed-hosts=* cannot be set here because the chart hardcodes --gunicorn-opts
+# by default, and MLflow 3.x forbids --allowed-hosts + --gunicorn-opts together.
+# The deploy_mlflow() function in k8s-bootstrap.sh patches the deployment args after
+# Helm install to remove --gunicorn-opts and add --allowed-hosts=*.
+extraArgs: {}
+
 # Extra environment variables for MinIO endpoint
 extraEnvVars:
   MLFLOW_S3_ENDPOINT_URL: "http://ml-minio:9000"
