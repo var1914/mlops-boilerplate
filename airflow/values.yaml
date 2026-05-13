@@ -4,7 +4,7 @@
 images:
   airflow:
     repository: localhost:5050/custom-airflow
-    tag: 0.0.10
+    tag: 0.0.11
     pullPolicy: Always
 
 # Executor
@@ -24,7 +24,7 @@ webserver:
 # Applied to scheduler, dag-processor, api-server, triggerer, AND task pods.
 extraInitContainers:
   - name: fix-log-perms
-    image: localhost:5050/custom-airflow:0.0.10
+    image: localhost:5050/custom-airflow:0.0.11
     imagePullPolicy: Always
     securityContext:
       runAsUser: 0

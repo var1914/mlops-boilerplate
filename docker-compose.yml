@@ -27,7 +27,7 @@ x-airflow-common: &airflow-common
     # Install ETL/ML dependencies at container start
     _PIP_ADDITIONAL_REQUIREMENTS: >-
       psycopg2-binary minio boto3 apache-airflow-providers-amazon
-      pandas numpy pyarrow scikit-learn lightgbm xgboost mlflow
+      pandas numpy pyarrow scikit-learn lightgbm xgboost mlflow==2.21.3
       requests redis prometheus-client pydantic pydantic-settings
     # ETL pipeline env vars (same values as K8s)
     MINIO_ENDPOINT: minio:9000
@@ -49,6 +49,10 @@ x-airflow-common: &airflow-common
     DB_USER: crypto
     DB_PASSWORD: crypto123
     PYTHONPATH: /opt/airflow/dags:/opt/airflow/dags/ml:/opt/airflow/src:/opt/airflow
+    # MLflow artifact storage — Airflow tasks need S3 creds to write model files to MinIO
+    MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    AWS_ACCESS_KEY_ID: admin
+    AWS_SECRET_ACCESS_KEY: admin123
   volumes:
     - ./dags:/opt/airflow/dags          # DAGs live-mounted (editable without rebuild)
     - ./src:/opt/airflow/src

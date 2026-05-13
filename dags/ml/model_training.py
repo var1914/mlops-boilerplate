@@ -401,18 +401,25 @@ class MLflowModelRegistry:
             raise
     
     def get_production_model(self, model_name):
-        """Get current production model"""
+        """Get current production model — tries @champion alias first (MLflow 3.x), then Production stage."""
         try:
+            # MLflow 3.x: @champion alias takes precedence
+            try:
+                version = self.client.get_model_version_by_alias(model_name, "champion")
+                return version
+            except Exception:
+                pass
+
             production_versions = self.client.get_latest_versions(
                 model_name, stages=["Production"]
             )
-            
+
             if production_versions:
                 return production_versions[0]
             else:
                 self.logger.warning(f"No production version found for {model_name}")
                 return None
-                
+
         except Exception as e:
             self.logger.error(f"Failed to get production model {model_name}: {e}")
             raise

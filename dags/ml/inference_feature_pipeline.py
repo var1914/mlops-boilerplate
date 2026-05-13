@@ -40,7 +40,7 @@ class InferenceFeatureEngine:
         redis_cfg = redis_config or settings.redis.get_client_config()
         self.redis_client = redis.Redis(**redis_cfg) if redis_cfg else None
         
-    def get_latest_ohlcv(self, symbol: str, periods: int = 200) -> pd.DataFrame:
+    def get_latest_ohlcv(self, symbol: str, periods: int = 800) -> pd.DataFrame:
         """Get latest OHLCV data for feature generation - increased periods for multi-horizon"""
         query = """
         SELECT open_time, open_price, high_price, low_price, close_price, volume, quote_volume
@@ -56,54 +56,34 @@ class InferenceFeatureEngine:
         return df.sort_values('open_time').reset_index(drop=True)
     
     def calculate_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate technical indicators matching training features"""
+        """Calculate technical indicators — must exactly match feature_eng.py output."""
         features = df.copy()
         close = df['close_price']
-        high = df['high_price'] 
+        high = df['high_price']
         low = df['low_price']
         open_price = df['open_price']
         volume = df['volume']
         quote_volume = df['quote_volume']
-        
-        # Moving Averages - match training periods
-        for period in [28, 56, 84, 200]:
+
+        # Moving Averages (match training: [7, 14, 21, 50])
+        for period in [7, 14, 21, 50]:
             features[f'sma_{period}'] = close.rolling(window=period).mean()
             features[f'ema_{period}'] = close.ewm(span=period).mean()
-        
-        # Price-based features
-        features['return_15m'] = close.pct_change()
-        features['return_1h'] = close.pct_change(periods=4)
-        features['return_4h'] = close.pct_change(periods=16)
-        features['return_24h'] = close.pct_change(periods=96)
-        features['return_7d'] = close.pct_change(periods=672)
-        
-        # Volatility
-        features['volatility_1h'] = features['return_15m'].rolling(window=4).std()
-        features['volatility_24h'] = features['return_15m'].rolling(window=96).std()
-        features['volatility_7d'] = features['return_15m'].rolling(window=672).std()
-        
-        # Price ratios
-        features['high_low_ratio'] = high / low
-        features['close_open_ratio'] = close / open_price
-        features['hl2'] = (high + low) / 2
-        features['hlc3'] = (high + low + close) / 3
-        features['ohlc4'] = (open_price + high + low + close) / 4
-        features['price_position'] = (close - low) / (high - low)
-        
+
         # RSI
         delta = close.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=56).mean()  # 14 hours
-        loss = (-delta.where(delta < 0, 0)).rolling(window=56).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         features['rsi_14'] = 100 - (100 / (1 + rs))
-        
+
         # MACD
         ema12 = close.ewm(span=12).mean()
         ema26 = close.ewm(span=26).mean()
         features['macd'] = ema12 - ema26
         features['macd_signal'] = features['macd'].ewm(span=9).mean()
         features['macd_histogram'] = features['macd'] - features['macd_signal']
-        
+
         # Bollinger Bands
         sma20 = close.rolling(window=20).mean()
         std20 = close.rolling(window=20).std()
@@ -111,68 +91,139 @@ class InferenceFeatureEngine:
         features['bb_lower'] = sma20 - (std20 * 2)
         features['bb_width'] = features['bb_upper'] - features['bb_lower']
         features['bb_position'] = (close - features['bb_lower']) / features['bb_width']
-        
-        # True Range and ATR
+
+        # Returns and log return
+        features['return_15m'] = close.pct_change()
+        features['return_1h'] = close.pct_change(periods=4)
+        features['return_4h'] = close.pct_change(periods=16)
+        features['return_24h'] = close.pct_change(periods=96)
+        features['return_7d'] = close.pct_change(periods=672)
+        features['log_return_15m'] = np.log(close / close.shift(1))
+
+        # Volatility
+        features['volatility_1h'] = features['return_15m'].rolling(window=4).std()
+        features['volatility_24h'] = features['return_15m'].rolling(window=96).std()
+        features['volatility_7d'] = features['return_15m'].rolling(window=672).std()
+
+        # Price ratios
+        features['high_low_ratio'] = high / low
+        features['close_open_ratio'] = close / open_price
+        features['hl2'] = (high + low) / 2
+        features['hlc3'] = (high + low + close) / 3
+        features['ohlc4'] = (open_price + high + low + close) / 4
+        features['price_position'] = (close - low) / (high - low)
+
+        # ATR
         prev_close = close.shift(1)
         tr1 = high - low
         tr2 = abs(high - prev_close)
         tr3 = abs(low - prev_close)
         features['true_range'] = np.maximum(tr1, np.maximum(tr2, tr3))
         features['atr_14'] = features['true_range'].rolling(window=56).mean()
-        
-        # Volume features
-        for period in [28, 56, 96, 672]:
+
+        # Volume features (match training: [7, 14, 24, 168])
+        for period in [7, 14, 24, 168]:
             features[f'volume_sma_{period}'] = volume.rolling(window=period).mean()
-        
-        features['volume_ratio_7'] = volume / features['volume_sma_28'] 
-        features['volume_ratio_24'] = volume / features['volume_sma_96']
+
+        features['volume_ratio_7'] = volume / features['volume_sma_7']
+        features['volume_ratio_24'] = volume / features['volume_sma_24']
         features['vwap'] = (quote_volume / volume).fillna(0)
         features['volume_price_trend'] = features['return_1h'] * features['volume_ratio_24']
-        
+
+        # OBV
+        obv = []
+        obv_val = 0
+        returns = features['return_1h'].fillna(0)
+        for i, ret in enumerate(returns):
+            if ret > 0:
+                obv_val += volume.iloc[i]
+            elif ret < 0:
+                obv_val -= volume.iloc[i]
+            obv.append(obv_val)
+        features['obv'] = obv
+        features['obv_sma_14'] = pd.Series(obv).rolling(window=56).mean().values
+
         # Time features
-        if hasattr(features, 'index') and hasattr(features.index, 'hour'):
+        if hasattr(features.index, 'hour'):
             features['hour'] = features.index.hour
             features['day_of_week'] = features.index.dayofweek
+            features['month'] = features.index.month
             features['hour_sin'] = np.sin(2 * np.pi * features['hour'] / 24)
             features['hour_cos'] = np.cos(2 * np.pi * features['hour'] / 24)
             features['day_sin'] = np.sin(2 * np.pi * features['day_of_week'] / 7)
             features['day_cos'] = np.cos(2 * np.pi * features['day_of_week'] / 7)
+            features['month_sin'] = np.sin(2 * np.pi * features['month'] / 12)
+            features['month_cos'] = np.cos(2 * np.pi * features['month'] / 12)
             features['is_weekend'] = (features['day_of_week'] >= 5).astype(int)
-        
+            features['asian_session'] = ((features['hour'] >= 0) & (features['hour'] < 8)).astype(int)
+            features['european_session'] = ((features['hour'] >= 8) & (features['hour'] < 16)).astype(int)
+            features['american_session'] = ((features['hour'] >= 16) & (features['hour'] < 24)).astype(int)
+
         return features
     
+    def _df_from_raw(self, symbol: str) -> pd.DataFrame:
+        """Fetch OHLCV, parse datetime index."""
+        df = self.get_latest_ohlcv(symbol)
+        if df.empty:
+            raise ValueError(f"No data available for {symbol}")
+        df['datetime'] = pd.to_datetime(df['open_time'], unit='ms')
+        return df.set_index('datetime')
+
     def get_inference_features(self, symbol: str, timestamp: Optional[datetime] = None) -> Dict:
-        """Get features for prediction"""
+        """Get features for prediction — includes cross-symbol features for non-BTC symbols."""
         cache_key = f"features:{symbol}:{timestamp or 'latest'}"
         if self.redis_client:
             cached = self.redis_client.get(cache_key)
             if cached:
                 return json.loads(cached)
-        
-        # Get latest data
-        df = self.get_latest_ohlcv(symbol)
-        if df.empty:
-            raise ValueError(f"No data available for {symbol}")
-            
-        df['datetime'] = pd.to_datetime(df['open_time'], unit='ms')
-        df = df.set_index('datetime')
-        
-        # Calculate features
+
+        df = self._df_from_raw(symbol)
         df = self.calculate_technical_indicators(df)
-        
-        # Get latest row features
+
+        # Cross-symbol features vs BTCUSDT (skip for BTC itself)
+        _cross_cols = ['corr_with_btc_24h', 'corr_with_btc_7d', 'relative_strength_btc',
+                       'price_ratio_to_btc', 'ratio_ma_7', 'volume_corr_btc_24h']
+        if symbol != 'BTCUSDT':
+            try:
+                btc_df = self._df_from_raw('BTCUSDT')
+                common_idx = df.index.intersection(btc_df.index)
+                if len(common_idx) > 0:
+                    s = df.loc[common_idx, 'close_price']
+                    b = btc_df.loc[common_idx, 'close_price']
+                    sv = df.loc[common_idx, 'volume']
+                    bv = btc_df.loc[common_idx, 'volume']
+                    df = df.loc[common_idx]
+                    df['corr_with_btc_24h'] = s.rolling(window=96).corr(b)
+                    df['corr_with_btc_7d'] = s.rolling(window=672).corr(b)
+                    df['relative_strength_btc'] = (s / s.iloc[0]) / (b / b.iloc[0])
+                    df['price_ratio_to_btc'] = s / b
+                    df['ratio_ma_7'] = df['price_ratio_to_btc'].rolling(window=28).mean()
+                    df['volume_corr_btc_24h'] = sv.rolling(window=24).corr(bv)
+                    # Fill any remaining NaN in cross-symbol features with 0
+                    for col in _cross_cols:
+                        if col in df.columns:
+                            df[col] = df[col].fillna(0.0)
+            except Exception as e:
+                self.logger.warning(f"Could not compute cross-symbol features for {symbol}: {e}")
+
+            # Guarantee all cross-symbol columns exist in df regardless of what happened above
+            for col in _cross_cols:
+                if col not in df.columns:
+                    df[col] = 0.0
+
         latest_features = df.iloc[-1]
-        
-        # Convert to dict, handling NaN values
+
+        # Intermediate helper columns not in model schema
+        _drop_cols = {'open_time', 'hour', 'day_of_week', 'day_of_month', 'month'}
+
         features_dict = {}
         for col, value in latest_features.items():
-            if pd.notna(value) and col not in ['open_time']:
+            if pd.notna(value) and col not in _drop_cols:
                 features_dict[col] = float(value) if isinstance(value, (np.integer, np.floating)) else value
-        
-        # Cache for 1 minute
+
         if self.redis_client:
             self.redis_client.setex(cache_key, 60, json.dumps(features_dict, default=str))
-        
+
         return features_dict
 
 class MultiTaskModelPredictor:

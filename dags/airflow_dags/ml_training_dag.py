@@ -162,9 +162,8 @@ def promote_best_models(**context) -> dict:
 
 
 def reload_inference_api(**context) -> dict:
-    """Trigger inference API to reload models."""
+    """Trigger inference API to reload models after promotion."""
     import requests
-    from etl.config import ETL_CONFIG
 
     api_url = os.getenv('INFERENCE_API_URL', 'http://crypto-prediction-api:8000')
 
@@ -320,12 +319,12 @@ with DAG(
         doc_md="Promote best models to staging/production"
     )
 
-    # Stage 5: API Reload (commented out until inference API is deployed)
-    # reload_api = PythonOperator(
-    #     task_id='reload_api',
-    #     python_callable=reload_inference_api,
-    #     doc_md="Trigger inference API to reload models"
-    # )
+    # Stage 5: API Reload — trigger inference API to load newly promoted models
+    reload_api = PythonOperator(
+        task_id='reload_api',
+        python_callable=reload_inference_api,
+        doc_md="Trigger inference API to reload models"
+    )
 
     # End marker
     end = EmptyOperator(
@@ -334,4 +333,4 @@ with DAG(
     )
 
     # Set dependencies
-    start >> validate_data >> feature_group >> training_group >> promote_models >> end
+    start >> validate_data >> feature_group >> training_group >> promote_models >> reload_api >> end

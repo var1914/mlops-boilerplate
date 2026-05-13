@@ -6,14 +6,8 @@ metadata:
   labels:
     app: crypto-prediction-api
     component: inference
-    version: v1.0.0
 spec:
-  replicas: 2
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+  replicas: 1
   selector:
     matchLabels:
       app: crypto-prediction-api
@@ -22,7 +16,6 @@ spec:
       labels:
         app: crypto-prediction-api
         component: inference
-        version: v1.0.0
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
@@ -30,43 +23,68 @@ spec:
     spec:
       containers:
       - name: api
-        image: crypto-prediction-api:1.0.0
-        imagePullPolicy: IfNotPresent
+        image: localhost:5050/crypto-api:0.0.7
+        imagePullPolicy: Always
         ports:
         - name: http
           containerPort: 8000
-          protocol: TCP
 
-        # Environment variables from ConfigMap
-        envFrom:
-        - configMapRef:
-            name: ml-pipeline-config
-
-        # Sensitive environment variables from Secrets
         env:
+        - name: ENVIRONMENT
+          value: production
+        - name: DEBUG
+          value: "false"
+        # PostgreSQL — crypto database for feature engineering
+        - name: DB_HOST
+          value: postgresql
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: crypto
+        - name: DB_USER
+          value: crypto
         - name: DB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: ml-pipeline-secrets
-              key: DB_PASSWORD
-        - name: MINIO_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: ml-pipeline-secrets
-              key: MINIO_ACCESS_KEY
-        - name: MINIO_SECRET_KEY
-          valueFrom:
-            secretKeyRef:
-              name: ml-pipeline-secrets
-              key: MINIO_SECRET_KEY
+          value: crypto123
+        # Redis — feature caching
+        - name: REDIS_HOST
+          value: ml-redis-master
+        - name: REDIS_PORT
+          value: "6379"
         - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: ml-pipeline-secrets
-              key: REDIS_PASSWORD
-              optional: true
+          value: redis123
+        # MinIO — model artifacts
+        - name: MINIO_ENDPOINT
+          value: minio:9000
+        - name: MINIO_ACCESS_KEY
+          value: admin
+        - name: MINIO_SECRET_KEY
+          value: admin123
+        - name: MINIO_SECURE
+          value: "false"
+        # MLflow — model registry
+        - name: MLFLOW_TRACKING_URI
+          value: http://ml-mlflow:5000
+        - name: MLFLOW_S3_ENDPOINT_URL
+          value: http://minio:9000
+        - name: AWS_ACCESS_KEY_ID
+          value: admin
+        - name: AWS_SECRET_ACCESS_KEY
+          value: admin123
+        # API config
+        - name: API_HOST
+          value: "0.0.0.0"
+        - name: API_PORT
+          value: "8000"
+        - name: API_LOG_LEVEL
+          value: info
+        - name: API_CORS_ORIGINS
+          value: '["*"]'
+        - name: MONITORING_ENABLE_METRICS
+          value: "true"
+        # Binance symbols for inference
+        - name: BINANCE_SYMBOLS
+          value: '["BTCUSDT","ETHUSDT","BNBUSDT","ADAUSDT","SOLUSDT","XRPUSDT","DOTUSDT","AVAXUSDT","MATICUSDT","LINKUSDT"]'
 
-        # Resource limits and requests
         resources:
           requests:
             cpu: "500m"
@@ -75,70 +93,38 @@ spec:
             cpu: "2000m"
             memory: "4Gi"
 
-        # Liveness probe - checks if container is alive
         livenessProbe:
           httpGet:
-            path: /health
+            path: /live
             port: http
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          successThreshold: 1
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
           failureThreshold: 3
 
-        # Readiness probe - checks if container is ready to serve traffic
         readinessProbe:
           httpGet:
-            path: /health
+            path: /ready
             port: http
-          initialDelaySeconds: 10
-          periodSeconds: 5
-          timeoutSeconds: 3
-          successThreshold: 1
-          failureThreshold: 3
+          initialDelaySeconds: 60
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 5
 
-        # Startup probe - gives more time for initial startup
         startupProbe:
           httpGet:
-            path: /health
+            path: /live
             port: http
-          initialDelaySeconds: 0
-          periodSeconds: 10
-          timeoutSeconds: 3
-          successThreshold: 1
-          failureThreshold: 30
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          timeoutSeconds: 10
+          failureThreshold: 20
 
-        # Volume mounts (if needed for caching models locally)
         volumeMounts:
         - name: model-cache
           mountPath: /tmp/model_cache
-        - name: tmp
-          mountPath: /tmp
 
-      # Volumes
       volumes:
       - name: model-cache
         emptyDir:
-          sizeLimit: 10Gi
-      - name: tmp
-        emptyDir: {}
-
-      # Pod-level security and scheduling
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        fsGroup: 1000
-
-      # Node affinity (optional - prefer nodes with GPU if available)
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            podAffinityTerm:
-              labelSelector:
-                matchExpressions:
-                - key: app
-                  operator: In
-                  values:
-                  - crypto-prediction-api
-              topologyKey: kubernetes.io/hostname
+          sizeLimit: 5Gi

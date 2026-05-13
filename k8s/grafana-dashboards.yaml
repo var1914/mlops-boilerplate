@@ -1,0 +1,314 @@
+---
+# Pipeline Health Dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-pipeline-health
+  namespace: ml-pipeline
+  labels:
+    grafana_dashboard: "1"
+data:
+  pipeline-health.json: |
+    {
+      "title": "ML Pipeline Health",
+      "uid": "ml-pipeline-health",
+      "tags": ["mlops", "airflow", "pipeline"],
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": {"from": "now-24h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "type": "stat", "title": "Airflow Scheduler Status",
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "targets": [{"expr": "airflow_scheduler_heartbeat", "legendFormat": "Heartbeat"}],
+          "options": {"colorMode": "background", "graphMode": "none"},
+          "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}, "mappings": [{"type": "value", "options": {"1": {"text": "HEALTHY", "color": "green"}, "0": {"text": "DOWN", "color": "red"}}}]}}
+        },
+        {
+          "id": 2, "type": "stat", "title": "ETL Task Successes (24h)",
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "targets": [{"expr": "increase(airflow_ti_successes[24h])", "legendFormat": "Successes"}],
+          "options": {"colorMode": "background"},
+          "fieldConfig": {"defaults": {"color": {"mode": "fixed", "fixedColor": "green"}, "unit": "short"}}
+        },
+        {
+          "id": 3, "type": "stat", "title": "ETL Task Failures (24h)",
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "targets": [{"expr": "increase(airflow_ti_failures[24h])", "legendFormat": "Failures"}],
+          "options": {"colorMode": "background"},
+          "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}, "unit": "short"}}
+        },
+        {
+          "id": 4, "type": "stat", "title": "DAG Processing Time",
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "targets": [{"expr": "airflow_dag_processing_last_duration", "legendFormat": "Last duration"}],
+          "fieldConfig": {"defaults": {"unit": "s"}}
+        },
+        {
+          "id": 5, "type": "timeseries", "title": "Task Success vs Failure Rate",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "targets": [
+            {"expr": "rate(airflow_ti_successes[5m])", "legendFormat": "Successes/s"},
+            {"expr": "rate(airflow_ti_failures[5m])", "legendFormat": "Failures/s"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "ops", "custom": {"lineWidth": 2}},
+            "overrides": [{"matcher": {"id": "byName", "options": "Failures/s"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}]}
+        },
+        {
+          "id": 6, "type": "bargauge", "title": "Airflow Pool Utilization",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "targets": [
+            {"expr": "airflow_pool_running_slots", "legendFormat": "Running - {{pool_name}}"},
+            {"expr": "airflow_pool_queued_slots", "legendFormat": "Queued - {{pool_name}}"},
+            {"expr": "airflow_pool_open_slots", "legendFormat": "Open - {{pool_name}}"}
+          ],
+          "options": {"orientation": "horizontal", "displayMode": "gradient"},
+          "fieldConfig": {"defaults": {"unit": "short", "min": 0}}
+        },
+        {
+          "id": 7, "type": "timeseries", "title": "Pod Restarts",
+          "gridPos": {"h": 6, "w": 12, "x": 0, "y": 12},
+          "targets": [{"expr": "increase(kube_pod_container_status_restarts_total{namespace=\"ml-pipeline\"}[1h])", "legendFormat": "{{pod}}"}],
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 1}}}
+        },
+        {
+          "id": 8, "type": "timeseries", "title": "Available Replicas by Deployment",
+          "gridPos": {"h": 6, "w": 12, "x": 12, "y": 12},
+          "targets": [{"expr": "kube_deployment_status_replicas_available{namespace=\"ml-pipeline\"}", "legendFormat": "{{deployment}}"}],
+          "fieldConfig": {"defaults": {"unit": "short", "min": 0}}
+        }
+      ]
+    }
+---
+# Model Performance Dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-model-performance
+  namespace: ml-pipeline
+  labels:
+    grafana_dashboard: "1"
+data:
+  model-performance.json: |
+    {
+      "title": "Model Performance",
+      "uid": "ml-model-performance",
+      "tags": ["mlops", "models", "mlflow"],
+      "timezone": "browser",
+      "refresh": "1m",
+      "time": {"from": "now-6h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "type": "stat", "title": "Total Models Loaded",
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "targets": [{"expr": "sum(loaded_models_total)", "legendFormat": "Models"}],
+          "options": {"colorMode": "background"},
+          "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 60}]}, "unit": "short"}}
+        },
+        {
+          "id": 2, "type": "stat", "title": "Symbols With Models",
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "targets": [{"expr": "count(loaded_models_total > 0)", "legendFormat": "Symbols"}],
+          "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 10}]}, "unit": "short"}}
+        },
+        {
+          "id": 3, "type": "stat", "title": "Prediction Success Rate",
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "targets": [{"expr": "rate(prediction_requests_total{status=\"success\"}[5m]) / rate(prediction_requests_total[5m]) * 100", "legendFormat": "Success %"}],
+          "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 90}, {"color": "green", "value": 99}]}}}
+        },
+        {
+          "id": 4, "type": "stat", "title": "Avg Prediction Latency",
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "targets": [{"expr": "histogram_quantile(0.50, rate(prediction_duration_seconds_bucket[5m]))", "legendFormat": "p50"}],
+          "fieldConfig": {"defaults": {"unit": "s"}}
+        },
+        {
+          "id": 5, "type": "bargauge", "title": "Models Loaded per Symbol",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "targets": [{"expr": "loaded_models_total", "legendFormat": "{{symbol}}"}],
+          "options": {"orientation": "horizontal", "displayMode": "gradient"},
+          "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 6}}
+        },
+        {
+          "id": 6, "type": "timeseries", "title": "Prediction Request Rate by Symbol",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "targets": [{"expr": "rate(prediction_requests_total[5m])", "legendFormat": "{{symbol}} / {{task}}"}],
+          "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 1}}}
+        },
+        {
+          "id": 7, "type": "heatmap", "title": "Prediction Latency Heatmap",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+          "targets": [{"expr": "rate(prediction_duration_seconds_bucket[5m])", "legendFormat": "{{le}}"}],
+          "options": {"calculate": false, "color": {"mode": "scheme", "scheme": "Oranges"}},
+          "fieldConfig": {"defaults": {"unit": "s"}}
+        },
+        {
+          "id": 8, "type": "timeseries", "title": "Prediction Latency Percentiles",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+          "targets": [
+            {"expr": "histogram_quantile(0.50, rate(prediction_duration_seconds_bucket[5m]))", "legendFormat": "p50"},
+            {"expr": "histogram_quantile(0.95, rate(prediction_duration_seconds_bucket[5m]))", "legendFormat": "p95"},
+            {"expr": "histogram_quantile(0.99, rate(prediction_duration_seconds_bucket[5m]))", "legendFormat": "p99"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}}
+        }
+      ]
+    }
+---
+# Prediction Metrics Dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-prediction-metrics
+  namespace: ml-pipeline
+  labels:
+    grafana_dashboard: "1"
+data:
+  prediction-metrics.json: |
+    {
+      "title": "Prediction Metrics",
+      "uid": "ml-prediction-metrics",
+      "tags": ["mlops", "inference", "api"],
+      "timezone": "browser",
+      "refresh": "15s",
+      "time": {"from": "now-1h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "type": "stat", "title": "Requests/sec",
+          "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+          "targets": [{"expr": "rate(http_requests_total{app=\"crypto-prediction-api\"}[1m])", "legendFormat": "req/s"}],
+          "fieldConfig": {"defaults": {"unit": "reqps"}}
+        },
+        {
+          "id": 2, "type": "stat", "title": "P95 Latency",
+          "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+          "targets": [{"expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{app=\"crypto-prediction-api\"}[5m]))", "legendFormat": "p95"}],
+          "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.5}, {"color": "red", "value": 2.0}]}}}
+        },
+        {
+          "id": 3, "type": "stat", "title": "HTTP Error Rate",
+          "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+          "targets": [{"expr": "rate(http_requests_total{app=\"crypto-prediction-api\", status_code=~\"5..\"}[5m]) / rate(http_requests_total{app=\"crypto-prediction-api\"}[5m]) * 100", "legendFormat": "Error %"}],
+          "fieldConfig": {"defaults": {"unit": "percent", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}}}
+        },
+        {
+          "id": 4, "type": "stat", "title": "Total Predictions (1h)",
+          "gridPos": {"h": 4, "w": 4, "x": 12, "y": 0},
+          "targets": [{"expr": "increase(prediction_requests_total[1h])", "legendFormat": "Predictions"}],
+          "fieldConfig": {"defaults": {"unit": "short"}}
+        },
+        {
+          "id": 5, "type": "stat", "title": "In-Progress Requests",
+          "gridPos": {"h": 4, "w": 4, "x": 16, "y": 0},
+          "targets": [{"expr": "http_requests_inprogress{app=\"crypto-prediction-api\"}", "legendFormat": "In-flight"}],
+          "fieldConfig": {"defaults": {"unit": "short"}}
+        },
+        {
+          "id": 6, "type": "stat", "title": "API Uptime",
+          "gridPos": {"h": 4, "w": 4, "x": 20, "y": 0},
+          "targets": [{"expr": "kube_deployment_status_replicas_available{deployment=\"crypto-prediction-api\"}", "legendFormat": "Replicas up"}],
+          "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}, "unit": "short"}}
+        },
+        {
+          "id": 7, "type": "timeseries", "title": "Request Rate by Endpoint",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "targets": [{"expr": "rate(http_requests_total{app=\"crypto-prediction-api\"}[1m])", "legendFormat": "{{handler}} {{method}}"}],
+          "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 1}}}
+        },
+        {
+          "id": 8, "type": "timeseries", "title": "HTTP Response Status Codes",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "targets": [{"expr": "rate(http_requests_total{app=\"crypto-prediction-api\"}[1m])", "legendFormat": "{{status_code}}"}],
+          "fieldConfig": {"defaults": {"unit": "reqps"}}
+        },
+        {
+          "id": 9, "type": "timeseries", "title": "Predictions by Symbol (rate)",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+          "targets": [{"expr": "rate(prediction_requests_total[5m])", "legendFormat": "{{symbol}} / {{task}} / {{status}}"}],
+          "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 1}}}
+        },
+        {
+          "id": 10, "type": "timeseries", "title": "End-to-End Prediction Latency by Task",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+          "targets": [
+            {"expr": "histogram_quantile(0.50, rate(prediction_duration_seconds_bucket[5m]))", "legendFormat": "p50 - {{task}}"},
+            {"expr": "histogram_quantile(0.95, rate(prediction_duration_seconds_bucket[5m]))", "legendFormat": "p95 - {{task}}"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "s"}}
+        }
+      ]
+    }
+---
+# Data Quality Dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-data-quality
+  namespace: ml-pipeline
+  labels:
+    grafana_dashboard: "1"
+data:
+  data-quality.json: |
+    {
+      "title": "Data Quality",
+      "uid": "ml-data-quality",
+      "tags": ["mlops", "data", "etl", "quality"],
+      "timezone": "browser",
+      "refresh": "1m",
+      "time": {"from": "now-24h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "type": "stat", "title": "Total Records in DB",
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "targets": [{"expr": "sum(crypto_data_records_total)", "legendFormat": "Total"}],
+          "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1000000}, {"color": "green", "value": 2000000}]}}}
+        },
+        {
+          "id": 2, "type": "stat", "title": "Symbols with Data",
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "targets": [{"expr": "count(crypto_data_records_total > 0)", "legendFormat": "Symbols"}],
+          "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 10}]}, "unit": "short"}}
+        },
+        {
+          "id": 3, "type": "stat", "title": "ETL Runs (24h)",
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "targets": [{"expr": "increase(airflow_dagrun_success_total{dag_id=\"etl_crypto_data_pipeline\"}[24h])", "legendFormat": "Successful runs"}],
+          "fieldConfig": {"defaults": {"unit": "short", "color": {"fixedColor": "green", "mode": "fixed"}}}
+        },
+        {
+          "id": 4, "type": "stat", "title": "Last ETL Duration",
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "targets": [{"expr": "airflow_dag_run_duration_success{dag_id=\"etl_crypto_data_pipeline\"}", "legendFormat": "Duration"}],
+          "fieldConfig": {"defaults": {"unit": "s"}}
+        },
+        {
+          "id": 5, "type": "bargauge", "title": "Records per Symbol",
+          "gridPos": {"h": 10, "w": 12, "x": 0, "y": 4},
+          "targets": [{"expr": "crypto_data_records_total", "legendFormat": "{{symbol}}"}],
+          "options": {"orientation": "horizontal", "displayMode": "gradient"},
+          "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 260000, "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 180000}, {"color": "green", "value": 240000}]}}}
+        },
+        {
+          "id": 6, "type": "timeseries", "title": "Records per Symbol Over Time",
+          "gridPos": {"h": 10, "w": 12, "x": 12, "y": 4},
+          "targets": [{"expr": "crypto_data_records_total", "legendFormat": "{{symbol}}"}],
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 1}}}
+        },
+        {
+          "id": 7, "type": "timeseries", "title": "Data Freshness — Last Record Timestamp",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+          "targets": [{"expr": "crypto_data_last_timestamp_seconds", "legendFormat": "{{symbol}}"}],
+          "fieldConfig": {"defaults": {"unit": "dateTimeFromNow"}}
+        },
+        {
+          "id": 8, "type": "timeseries", "title": "ETL Task Success/Failure Rate",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+          "targets": [
+            {"expr": "rate(airflow_ti_successes{dag_id=\"etl_crypto_data_pipeline\"}[1h])", "legendFormat": "Successes/h"},
+            {"expr": "rate(airflow_ti_failures{dag_id=\"etl_crypto_data_pipeline\"}[1h])", "legendFormat": "Failures/h"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": [{"matcher": {"id": "byName", "options": "Failures/h"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}]}
+        }
+      ]
+    }

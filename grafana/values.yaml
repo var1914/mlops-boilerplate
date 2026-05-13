@@ -3,15 +3,15 @@ grafana:
   service:
     type: NodePort
     nodePort: 30001
-  
-  # Enable sidecar to watch for dashboard ConfigMaps
+
+  # Enable sidecar to watch for dashboard ConfigMaps across all namespaces
   sidecar:
     dashboards:
       enabled: true
       label: grafana_dashboard
       folder: /tmp/dashboards
       defaultFolderName: "ML Monitoring"
-      searchNamespace: ml-monitoring
+      searchNamespace: ALL
       provider:
         name: sidecarProvider
         orgid: 1
@@ -22,20 +22,43 @@ grafana:
 
 prometheus:
   prometheusSpec:
-    # Fix: Move additionalScrapeConfigs under prometheusSpec
     additionalScrapeConfigs:
-      - job_name: 'pushgateway'
+      # Airflow StatsD exporter — DAG/task/pool metrics
+      - job_name: 'airflow'
         static_configs:
-          - targets: ['pushgateway-prometheus-pushgateway:9091']
-        scrape_interval: 15s
-        honor_labels: true  # Critical for pushgateway
-        metrics_path: /metrics
+          - targets: ['airflow-statsd.ml-pipeline.svc.cluster.local:9102']
+            labels:
+              service: 'airflow'
+              component: 'orchestration'
+        scrape_interval: 30s
         scrape_timeout: 10s
+
+      # Inference API — prediction latency, model status, request rates
+      - job_name: 'crypto-prediction-api'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ['ml-pipeline']
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+        scrape_interval: 15s
 
 # Fix for Docker Desktop node-exporter mount issue
 prometheus-node-exporter:
   hostRootFsMount:
     enabled: false
-  # Keep these enabled for basic monitoring
   hostNetwork: true
   hostPID: true

@@ -49,7 +49,9 @@ You don't need an ML background to run this. You do need basic comfort with the 
 | Infrastructure (Kubernetes) | ✅ Working | Helm-based, one command, fully reproducible |
 | ML Training Pipeline | ✅ Working | 60 models trained and registered in MLflow |
 | Model Promotion | ✅ Working | All models tagged `@champion` alias automatically |
-| Inference API (predictions) | 📋 Next up | Start after training: `docker compose --profile inference up -d api` |
+| Inference API (predictions) | ✅ Working | FastAPI service, loads `@champion` models, Prometheus metrics |
+| Auto model reload | ✅ Working | `reload_api` Airflow task reloads inference API after each training run |
+| Grafana MLOps dashboards | ✅ Working | 4 custom dashboards: pipeline health, model performance, predictions, data quality |
 
 ---
 
@@ -86,6 +88,8 @@ Loads the `@champion` models from MLflow and serves predictions over HTTP. Scale
 ```
 HTTP Request  →  Feature Generation  →  Model Prediction  →  HTTP Response
 ```
+
+After training completes, the `reload_api` task automatically calls `POST /models/reload` on the inference API — no manual step required.
 
 All three pipelines are orchestrated by **Apache Airflow**, which schedules, monitors, and retries tasks automatically.
 
@@ -153,14 +157,14 @@ When Airflow is ready, the response looks like:
 git clone <repo-url>
 cd ml-eng-with-ops
 
-# Deploy everything — first run takes 20-30 minutes (builds custom Docker image)
-./scripts/k8s-bootstrap.sh --infra-only
+# Deploy everything — first run takes 20-30 minutes (builds custom Docker images)
+./scripts/k8s-bootstrap.sh
 
 # Check everything is running
 ./scripts/k8s-bootstrap.sh --status
 ```
 
-> **What happens during first run:** The script starts a local Docker registry, builds a custom Airflow image (`apache/airflow:3.0.2` + LightGBM, XGBoost, MLflow, OpenMP, etc.), pushes it to the local registry, creates a persistent volume for logs, deploys all services via Helm, and configures Airflow pools. Subsequent runs skip steps that are already complete.
+> **What happens during first run:** The script starts a local Docker registry, builds custom Airflow and inference API images, pushes them to the local registry, creates a persistent volume for logs, deploys all services via Helm (PostgreSQL, MinIO, Redis, MLflow, Airflow, Prometheus, Grafana, inference API), configures Airflow, and applies Grafana dashboards. Subsequent runs skip steps that are already complete.
 
 **Access the services** (port-forward to your laptop):
 
@@ -175,7 +179,7 @@ kubectl port-forward -n ml-pipeline svc/ml-mlflow 5000:5000
 
 # Grafana — monitoring dashboards
 kubectl port-forward -n ml-pipeline svc/ml-monitoring-grafana 3000:80
-# Open: http://localhost:3000  (admin / prom-operator)
+# Open: http://localhost:3000  (admin / admin123)
 
 # MinIO — file storage console
 kubectl port-forward -n ml-pipeline svc/minio 9001:9001
@@ -274,8 +278,10 @@ validate_data  →  feature_group (×10 symbols, parallel)
                        ↓
                training_group (×10 symbols, max 3 concurrent)
                        ↓
-               promote_models  →  end
+               promote_models  →  reload_api  →  end
 ```
+
+The final `reload_api` task automatically calls `POST /models/reload` on the running inference API — no manual intervention needed after training.
 
 Each training task per symbol:
 1. Loads 250K+ feature rows from MinIO
@@ -306,6 +312,45 @@ print(f'With @champion alias: {len(champion)}')
 ```
 
 Expected: 60 models registered, all with `@champion` alias.
+
+---
+
+## End-to-End Verification
+
+After the full pipeline has run (ETL → ML training → model promotion → API reload), verify everything is working:
+
+```bash
+# Port-forward the inference API
+kubectl port-forward -n ml-pipeline svc/crypto-prediction-api 8000:8000
+
+# 1. Health check — should show 30 loaded models, all 10 symbols
+curl http://localhost:8000/health
+
+# 2. Readiness — 200 means models are loaded
+curl http://localhost:8000/ready
+
+# 3. Predictions for each symbol
+for sym in BTCUSDT ETHUSDT SOLUSDT BNBUSDT LINKUSDT; do
+  echo "=== $sym ===" && curl -s http://localhost:8000/predict/$sym/summary | python3 -m json.tool
+done
+
+# 4. MLflow — should show 60 registered models, all with @champion
+kubectl port-forward -n ml-pipeline svc/ml-mlflow 5001:5000
+curl -s "http://localhost:5001/api/2.0/mlflow/registered-models/search?max_results=100" | \
+  python3 -c "
+import sys,json
+models=json.load(sys.stdin).get('registered_models',[])
+champ=[m for m in models if any(a['alias']=='champion' for a in m.get('aliases',[]))]
+print(f'Total models: {len(models)}, @champion: {len(champ)}')
+"
+
+# 5. Grafana dashboards — open http://localhost:3000 after port-forwarding
+kubectl port-forward -n ml-pipeline svc/ml-monitoring-grafana 3000:80
+# Login: admin / admin123
+# Dashboards: ML Pipeline Health, Model Performance, Prediction Metrics, Data Quality
+```
+
+Expected: 60 MLflow models, 30 loaded in API (XGBoost + LightGBM × 3 tasks × 10 symbols), predictions returning for all symbols.
 
 ---
 
@@ -361,6 +406,37 @@ Once models are trained and promoted, the inference API is available at `http://
 ```bash
 docker compose --profile inference up -d api
 ```
+
+**Start the inference API (Kubernetes) — after ML training completes:**
+```bash
+# The API is already deployed by the bootstrap script (returns 503 until models are loaded).
+# After ML training finishes and models are registered with @champion alias, reload:
+kubectl port-forward -n ml-pipeline svc/crypto-prediction-api 8000:8000
+
+# Force reload models from MLflow
+curl -X POST http://localhost:8000/models/reload
+
+# Check status
+curl http://localhost:8000/health
+curl http://localhost:8000/ready  # 200 = models loaded, 503 = still loading
+
+# Get predictions
+curl http://localhost:8000/predict/BTCUSDT/summary
+curl -X POST http://localhost:8000/predict/batch \
+  -H "Content-Type: application/json" \
+  -d '{"symbols": ["BTCUSDT", "ETHUSDT"]}'
+```
+
+> **Note:** The API starts immediately but returns `503 /ready` until ML training has run and models are registered in MLflow. Once the `ml_training_pipeline` DAG completes, its final `reload_api` task calls `POST /models/reload` automatically — the API becomes ready without any manual step.
+
+**Grafana MLOps dashboards** (open after port-forwarding Grafana):
+
+| Dashboard | What it shows |
+|---|---|
+| **ML Pipeline Health** | Airflow task success/failure rates, pool utilization, pod restarts |
+| **Model Performance** | Loaded model count per symbol, prediction success rate, latency percentiles |
+| **Prediction Metrics** | Request rate, HTTP latency p50/p95/p99, error rate, requests by endpoint |
+| **Data Quality** | Records per symbol, data freshness, last ETL timestamp, run history |
 
 ---
 
@@ -461,6 +537,14 @@ This setup runs on Docker Desktop's single-node Kubernetes, which is fine for le
 - Enable TLS and secrets management (Vault, AWS Secrets Manager)
 - Set `helm upgrade` (not `--force`) for rolling updates — preserves K8s secrets and avoids JWT mismatch
 
+**If the K8s cluster gets into a bad state** (JWT auth loops, stuck helm releases, env var conflicts), the fastest fix is a full clean reinstall — upgrades accumulate state that's hard to untangle:
+
+```bash
+# Full teardown and fresh deploy (~20 min)
+echo -e "yes\nyes" | ./scripts/k8s-bootstrap.sh --cleanup
+./scripts/k8s-bootstrap.sh
+```
+
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common errors (Airflow 3.0 specific issues, MinIO connection errors, JWT signature failures, log persistence on Docker Desktop K8s, and more).
 
 ---
@@ -469,11 +553,11 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common errors (Airflow 3.0 spec
 
 Contributions are welcome. Areas where help is most needed:
 
-- Inference API end-to-end validation (loading `@champion` models and serving predictions)
 - Adding pytest test coverage for ETL and ML pipeline modules
 - Cloud provider deployment examples (AWS EKS, GCP GKE, Azure AKS)
-- Additional Grafana dashboards (model drift, prediction latency)
+- Model drift detection and alerting dashboards
 - Support for PyTorch and TensorFlow models
+- HPA (Horizontal Pod Autoscaler) configuration for the inference API
 
 **To contribute:**
 1. Fork the repository

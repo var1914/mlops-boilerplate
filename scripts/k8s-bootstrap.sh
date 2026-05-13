@@ -452,14 +452,20 @@ GRANT USAGE, SELECT ON SEQUENCE session_id_seq TO airflow;
     kubectl exec -n "$NAMESPACE" deployment/airflow-api-server -- airflow fab-db migrate 2>/dev/null || log_info "FAB migration may have already run"
 
     # Step 3: Patch airflow-jwt-secret to our fixed value so it matches the AIRFLOW__API_AUTH__JWT_SECRET
-    # env var set in values.yaml. Without this, --force upgrades regenerate a new random secret
+    # env var set in values.yaml. Without this, helm upgrades regenerate a new random secret
     # while our env var stays the same → "Signature verification failed" in task pods.
+    # After patching, restart BOTH scheduler (signs tokens) and api-server (validates tokens)
+    # so they both pick up the patched value before any tasks are spawned.
     log_info "Patching JWT secret to fixed value for consistency..."
     local JWT_B64
     JWT_B64=$(echo -n "cF1A7mWl4zbZNwUyySQHxg" | base64)
     kubectl patch secret airflow-jwt-secret -n "$NAMESPACE" \
         --type=json \
         -p="[{\"op\":\"replace\",\"path\":\"/data/jwt-secret\",\"value\":\"$JWT_B64\"}]" 2>/dev/null || true
+    log_info "Restarting scheduler and api-server to pick up patched JWT secret..."
+    kubectl rollout restart deployment/airflow-scheduler deployment/airflow-api-server -n "$NAMESPACE" 2>/dev/null || true
+    kubectl rollout status deployment/airflow-scheduler -n "$NAMESPACE" --timeout=120s 2>/dev/null || true
+    kubectl rollout status deployment/airflow-api-server -n "$NAMESPACE" --timeout=120s 2>/dev/null || true
 
     # Step 4: Create Airflow pools for ETL pipeline
     log_info "Creating Airflow pools..."
@@ -597,7 +603,50 @@ deploy_infrastructure() {
     # Configure Airflow after deployment (session table, pools, FAB migration)
     configure_airflow_post_deploy
 
+    # Deploy inference API (after Airflow, needs models from MLflow)
+    deploy_inference_api
+
+    # Apply Grafana dashboards as ConfigMaps (sidecar picks them up automatically)
+    apply_grafana_dashboards
+
     log_success "All infrastructure services deployed!"
+}
+
+deploy_inference_api() {
+    log_step "Deploying Inference API"
+
+    local API_IMAGE_TAG="0.0.7"
+
+    if kubectl get deployment crypto-prediction-api -n "$NAMESPACE" &>/dev/null && \
+       kubectl get pods -l app=crypto-prediction-api -n "$NAMESPACE" 2>/dev/null | grep -q "Running"; then
+        log_info "Inference API already running. Skipping..."
+        return 0
+    fi
+
+    # Build and push inference API image
+    log_info "Building inference API Docker image..."
+    docker build -t localhost:5050/crypto-api:$API_IMAGE_TAG \
+        -f "$ROOT_DIR/docker/Dockerfile.inference" "$ROOT_DIR"
+
+    log_info "Pushing inference API image..."
+    docker push localhost:5050/crypto-api:$API_IMAGE_TAG
+
+    # Deploy K8s manifests
+    log_info "Deploying inference API to Kubernetes..."
+    kubectl apply -f "$ROOT_DIR/k8s/api-deployment.yaml"
+    kubectl apply -f "$ROOT_DIR/k8s/api-service.yaml"
+
+    # Don't wait — models need to be trained first. API will start but /ready returns 503 until models load.
+    log_info "Inference API deployed. It will return 503 /ready until ML training completes."
+    log_info "After training: kubectl rollout restart deployment/crypto-prediction-api -n $NAMESPACE"
+    log_success "Inference API deployed."
+}
+
+apply_grafana_dashboards() {
+    log_step "Applying Grafana Dashboards"
+
+    kubectl apply -f "$ROOT_DIR/k8s/grafana-dashboards.yaml"
+    log_success "Grafana dashboards applied (sidecar picks them up within 30s)."
 }
 
 # =============================================================================

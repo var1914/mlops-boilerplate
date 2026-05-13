@@ -13,10 +13,12 @@ from contextlib import asynccontextmanager
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from prometheus_fastapi_instrumentator import Instrumentator
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add parent dirs so dags.* and src.* packages are resolvable from /app
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, _repo_root)           # enables: from dags.ml.x import ..., from src.config import ...
+sys.path.insert(0, os.path.join(_repo_root, 'dags', 'ml'))   # enables: from model_training import ...
 
-from dags.inference_feature_pipeline import MultiTaskModelPredictor, INFERENCE_TASKS
+from dags.ml.inference_feature_pipeline import MultiTaskModelPredictor, INFERENCE_TASKS
 from src.config import get_settings
 
 # Load configuration
@@ -34,31 +36,38 @@ DB_CONFIG = settings.database.get_connection_dict()
 REDIS_CONFIG = settings.redis.get_client_config()
 SUPPORTED_SYMBOLS = settings.binance.symbols
 
+async def _data_quality_refresh_loop():
+    """Refresh data quality Prometheus metrics every 5 minutes."""
+    while True:
+        await asyncio.sleep(300)
+        await asyncio.get_event_loop().run_in_executor(None, refresh_data_quality_metrics)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown"""
-    # Startup
     global predictor
     try:
         logger.info("Initializing prediction service...")
         predictor = MultiTaskModelPredictor(DB_CONFIG, REDIS_CONFIG)
-        
-        # Load production models
+
         loaded, failed = predictor.load_production_models(
             symbols=SUPPORTED_SYMBOLS,
             tasks=list(INFERENCE_TASKS.keys()),
             model_types=['lightgbm', 'xgboost']
         )
-        
         logger.info(f"Service initialized: {loaded} models loaded, {failed} failed")
-        
+
+        # Seed data quality metrics immediately then refresh periodically
+        refresh_data_quality_metrics()
+        task = asyncio.create_task(_data_quality_refresh_loop())
+
     except Exception as e:
         logger.error(f"Failed to initialize predictor: {e}")
         raise
-    
+
     yield
-    
-    # Shutdown
+
+    task.cancel()
     logger.info("Shutting down prediction service...")
 
 # Create FastAPI app
@@ -109,6 +118,39 @@ loaded_models_gauge = Gauge(
     'Number of loaded ML models',
     ['symbol', 'task']
 )
+
+crypto_records_gauge = Gauge(
+    'crypto_data_records_total',
+    'Total records per symbol in the crypto_data table',
+    ['symbol']
+)
+
+crypto_last_ts_gauge = Gauge(
+    'crypto_data_last_timestamp_seconds',
+    'Unix timestamp of the most recent record per symbol',
+    ['symbol']
+)
+
+def refresh_data_quality_metrics():
+    """Query PostgreSQL and update data quality Prometheus gauges."""
+    import psycopg2
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT symbol,
+                       COUNT(*) AS cnt,
+                       EXTRACT(EPOCH FROM MAX(to_timestamp(open_time / 1000))) AS last_ts
+                FROM crypto_data
+                GROUP BY symbol
+            """)
+            for symbol, cnt, last_ts in cur.fetchall():
+                crypto_records_gauge.labels(symbol=symbol).set(cnt)
+                if last_ts:
+                    crypto_last_ts_gauge.labels(symbol=symbol).set(last_ts)
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Could not refresh data quality metrics: {e}")
 
 # Pydantic models
 class SymbolPredictionRequest(BaseModel):
@@ -354,7 +396,7 @@ async def predict_single_task(
 @app.get("/predict/{symbol}/summary")
 async def prediction_summary(symbol: str):
     """Get a summary of key predictions for a symbol"""
-    result = await predict_symbol(symbol)
+    result = await predict_symbol(symbol, tasks=None, timestamp=None)
     
     # Extract key predictions
     summary = {
