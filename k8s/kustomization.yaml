@@ -3,11 +3,6 @@ kind: Kustomization
 
 namespace: ml-pipeline
 
-# Common labels applied to all resources
-commonLabels:
-  project: ml-inference-pipeline
-  managed-by: kustomize
-
 # =============================================================================
 # Resources to deploy
 # NOTE: secrets.yaml must be created from secrets.yaml.example before deploying
