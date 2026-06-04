@@ -155,6 +155,7 @@ k8s/*-secrets.yaml
 secrets/
 *.secret.yaml
 
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -216,3 +217,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Terraform
+terraform/**/.terraform/
+terraform/**/*.tfstate
+terraform/**/*.tfstate.*
+terraform/environments/**/terraform.tfvars

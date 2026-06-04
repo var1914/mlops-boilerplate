@@ -6,6 +6,7 @@
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326CE5)](https://kubernetes.io/)
 [![Airflow](https://img.shields.io/badge/Airflow-3.0-017CEE)](https://airflow.apache.org/)
 [![MLflow](https://img.shields.io/badge/MLflow-3.x-0194E2)](https://mlflow.org/)
+[![Terraform](https://img.shields.io/badge/Terraform-1.5+-326CE5)](https://www.terraform.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -47,11 +48,13 @@ You don't need an ML background to run this. You do need basic comfort with the 
 | ETL Pipeline (data collection) | ✅ Working | ~2.28M records, fully automated end-to-end |
 | Infrastructure (Docker Compose) | ✅ Working | One command, zero manual steps |
 | Infrastructure (Kubernetes) | ✅ Working | Helm-based, one command, fully reproducible |
+| Infrastructure (AWS) | ✅ Working | Terraform-managed, one command, fully reproducible |
 | ML Training Pipeline | ✅ Working | 60 models trained and registered in MLflow |
 | Model Promotion | ✅ Working | All models tagged `@champion` alias automatically |
 | Inference API (predictions) | ✅ Working | FastAPI service, loads `@champion` models, Prometheus metrics |
 | Auto model reload | ✅ Working | `reload_api` Airflow task reloads inference API after each training run |
 | Grafana MLOps dashboards | ✅ Working | 4 custom dashboards: pipeline health, model performance, predictions, data quality |
+
 
 ---
 
@@ -469,6 +472,10 @@ ml-eng-with-ops/
 │   ├── Dockerfile.airflow       # Custom Airflow image (libgomp1 + all ML deps)
 │   └── Dockerfile.inference     # Inference API image
 │
+├── terraform/                   # AWS infrastructure (Terraform)
+│   ├── bootstrap/               # Remote state (S3 + DynamoDB)
+│   ├── environments/dev|prod/   # Per-environment apply
+│   └── modules/                 # VPC, EKS, RDS, S3, IAM, Helm, …
 ├── airflow/                     # Airflow Helm values
 ├── mlflow/                      # MLflow Helm values
 ├── postgresql/                  # PostgreSQL Helm values (correct schema)
@@ -496,6 +503,7 @@ ml-eng-with-ops/
 | **Kubernetes** | Container orchestration — runs and scales all the services |
 | **Helm** | Package manager for Kubernetes — simplifies deploying complex service stacks |
 | **Docker** | Containerization — packages each service with its dependencies |
+| **Terraform** | Infrastructure as code — provisions and manages AWS resources |
 
 ---
 
@@ -527,25 +535,30 @@ ml-eng-with-ops/
 
 ## Going to Production
 
-This setup runs on Docker Desktop's single-node Kubernetes, which is fine for learning and development. For production:
+The [Quick Start](#quick-start) paths cover **local** deployment (Compose or Kubernetes on Docker Desktop). That is enough for learning and for running the pipelines in this README end to end.
 
-- Replace MinIO with cloud object storage (AWS S3, GCP Cloud Storage, Azure Blob)
-- Replace local PostgreSQL with a managed database (AWS RDS, GCP Cloud SQL)
-- Use a cloud container registry (AWS ECR, GCP Artifact Registry) instead of `localhost:5050`
-- Use a managed Airflow service (AWS MWAA, GCP Composer) or deploy on a multi-node cluster
-- Configure remote log storage for Airflow (S3/GCS) for log persistence across pod restarts
-- Enable TLS and secrets management (Vault, AWS Secrets Manager)
-- Set `helm upgrade` (not `--force`) for rolling updates — preserves K8s secrets and avoids JWT mismatch
+**AWS production** is a third path: the same DAGs, inference API, and workflows above, with managed backing services on EKS. Configure and deploy via [terraform/README.md](terraform/README.md) and [scripts/deploy-aws-prod.sh](scripts/deploy-aws-prod.sh)
 
-**If the K8s cluster gets into a bad state** (JWT auth loops, stuck helm releases, env var conflicts), the fastest fix is a full clean reinstall — upgrades accumulate state that's hard to untangle:
-
+**Bootstrap:**
 ```bash
-# Full teardown and fresh deploy (~20 min)
-echo -e "yes\nyes" | ./scripts/k8s-bootstrap.sh --cleanup
-./scripts/k8s-bootstrap.sh
+./scripts/deploy-aws-prod.sh bootstrap
 ```
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common errors (Airflow 3.0 specific issues, MinIO connection errors, JWT signature failures, log persistence on Docker Desktop K8s, and more).
+**Development:**
+```bash
+cd terraform/environments/dev
+cp terraform.tfvars.example terraform.tfvars
+./scripts/deploy-aws-prod.sh all dev
+```
+
+**Production deploy:**
+```bash
+cd terraform/environments/prod
+cp terraform.tfvars.example terraform.tfvars
+./scripts/deploy-aws-prod.sh all prod
+```
+
+Then point your API DNS at the Istio load balancer (see [terraform/README.md](terraform/README.md)). During `all` / `infra`, the deploy script shows a Terraform plan and asks **`[y/N]`** before applying; use `TF_AUTO_APPROVE=1` only for CI. Staged commands (`infra`, `databases`, `build-push`, `apps`) are documented in [terraform/README.md](terraform/README.md).
 
 ---
 
@@ -554,7 +567,6 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common errors (Airflow 3.0 spec
 Contributions are welcome. Areas where help is most needed:
 
 - Adding pytest test coverage for ETL and ML pipeline modules
-- Cloud provider deployment examples (AWS EKS, GCP GKE, Azure AKS)
 - Model drift detection and alerting dashboards
 - Support for PyTorch and TensorFlow models
 - HPA (Horizontal Pod Autoscaler) configuration for the inference API
@@ -575,4 +587,4 @@ MIT — see [LICENSE](LICENSE) for details.
 
 ## Built With
 
-[FastAPI](https://fastapi.tiangolo.com/) · [MLflow](https://mlflow.org/) · [Apache Airflow](https://airflow.apache.org/) · [Prometheus](https://prometheus.io/) · [Grafana](https://grafana.com/) · [Kubernetes](https://kubernetes.io/) · [MinIO](https://min.io/) · [Redis](https://redis.io/) · [LightGBM](https://lightgbm.readthedocs.io/) · [XGBoost](https://xgboost.readthedocs.io/)
+[FastAPI](https://fastapi.tiangolo.com/) · [MLflow](https://mlflow.org/) · [Apache Airflow](https://airflow.apache.org/) · [Prometheus](https://prometheus.io/) · [Grafana](https://grafana.com/) · [Kubernetes](https://kubernetes.io/) · [MinIO](https://min.io/) · [Redis](https://redis.io/) · [LightGBM](https://lightgbm.readthedocs.io/) · [XGBoost](https://xgboost.readthedocs.io/) · [Terraform](https://www.terraform.io/)

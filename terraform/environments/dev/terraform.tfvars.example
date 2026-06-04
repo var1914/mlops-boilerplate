@@ -1,0 +1,102 @@
+# =============================================================================
+# Development — copy to terraform.tfvars and customize
+# =============================================================================
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Uncommented lines = required (no default in variables.tf).
+# Commented lines   = optional; values shown are the dev defaults from
+#                     environments/dev/variables.tf. Uncomment only to override.
+#
+# Dev differences vs prod (in main.tf, not overridable via tfvars):
+#   - single_nat_gateway = true (lower cost)
+#   - RDS: deletion_protection = false, skip_final_snapshot = true
+#   - VPC CIDR 10.0.0.0/16 (defaults below)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Required
+# -----------------------------------------------------------------------------
+
+project_name = "mlops-boilerplate"
+environment  = "dev"
+region       = "us-east-1"
+
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# Let's Encrypt registration email (required even for dev if using TLS ingress)
+acme_email = "you@example.com"
+
+# -----------------------------------------------------------------------------
+# Ingress / DNS (optional — dev defaults shown)
+# -----------------------------------------------------------------------------
+
+# ingress_api_host = "api-dev.crypto-ml.example.com"  # default
+
+# ingress_ui_host = ""  # default
+
+# Staging CA recommended for dev (avoids production LE rate limits)
+# acme_use_staging = true  # default
+
+# -----------------------------------------------------------------------------
+# VPC (optional — dev CIDR 10.0.0.0/16, separate from prod)
+# -----------------------------------------------------------------------------
+
+# vpc_cidr = "10.0.0.0/16"  # default
+
+# private_subnet_cidrs = ["10.0.1.0/24", "10.0.2.0/24"]  # default
+
+# public_subnet_cidrs = ["10.0.101.0/24", "10.0.102.0/24"]  # default
+
+# database_subnet_cidrs = ["10.0.201.0/24", "10.0.202.0/24"]  # default
+
+# -----------------------------------------------------------------------------
+# EKS (optional — smaller than prod)
+# -----------------------------------------------------------------------------
+
+# kubernetes_version = "1.31"  # default
+
+# node_instance_types = ["t3.medium"]  # default
+
+# node_desired_size = 2  # default
+
+# node_min_size = 1  # default
+
+# node_max_size = 4  # default
+
+# -----------------------------------------------------------------------------
+# RDS (optional)
+# -----------------------------------------------------------------------------
+
+# rds_instance_class = "db.t3.medium"  # default
+
+# Cost saving for dev: disable Multi-AZ (override default true)
+# rds_multi_az = true  # default — uncomment next line for cheaper single-AZ
+# rds_multi_az = false
+
+# -----------------------------------------------------------------------------
+# ElastiCache (optional)
+# -----------------------------------------------------------------------------
+
+# redis_node_type = "cache.t3.micro"  # default
+
+# -----------------------------------------------------------------------------
+# ECR (optional)
+# -----------------------------------------------------------------------------
+
+# ecr_repositories = ["inference-api", "airflow"]  # default
+
+# -----------------------------------------------------------------------------
+# API runtime (optional)
+# -----------------------------------------------------------------------------
+
+# ENVIRONMENT key in ml-pipeline-config; defaults to environment (dev → "dev")
+# api_runtime_environment = "development"  # override example
+
+# -----------------------------------------------------------------------------
+# Application namespaces (optional)
+# -----------------------------------------------------------------------------
+
+# app_namespaces = [
+#   { name = "ml-pipeline", istio_injection = true },
+# ]  # default

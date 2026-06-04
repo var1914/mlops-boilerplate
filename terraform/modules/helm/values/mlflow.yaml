@@ -1,0 +1,33 @@
+# MLflow tracking server — Postgres metadata store, S3 artifacts via IRSA.
+
+backendStore:
+  postgres:
+    enabled: true
+    host: "${rds_endpoint}"
+    port: ${rds_port}
+    database: "${rds_db_name}"
+    user: "${rds_username}"
+
+artifactRoot:
+  s3:
+    enabled: true
+    bucket: "${mlflow_artifacts_bucket}"
+    awsAccessKeyId: ""
+    awsSecretAccessKey: ""
+
+serviceAccount:
+  create: true
+  name: mlflow
+  annotations:
+    eks.amazonaws.com/role-arn: "${mlflow_role_arn}"
+
+service:
+  type: ClusterIP
+  port: 5000
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    memory: 512Mi

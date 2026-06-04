@@ -1,0 +1,29 @@
+# Istiod control plane — mesh config, pilot autoscaling, sidecar resources.
+
+pilot:
+  autoscaleEnabled: true
+  autoscaleMin: 1
+  autoscaleMax: 3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+  traceSampling: 10.0
+
+meshConfig:
+  accessLogFile: /dev/stdout
+  accessLogEncoding: JSON
+  enablePrometheusMerge: true
+  defaultConfig:
+    holdApplicationUntilProxyStarts: true
+
+global:
+  proxy:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi

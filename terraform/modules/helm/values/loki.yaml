@@ -1,0 +1,22 @@
+# Loki + Promtail — cluster log aggregation (Grafana datasource wired in kube-prometheus).
+
+loki:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 10Gi
+
+promtail:
+  enabled: true
+  config:
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+
+grafana:
+  enabled: false
+  sidecar:
+    datasources:
+      enabled: false
+
+prometheus:
+  enabled: false

@@ -1,0 +1,28 @@
+# Kiali — Istio service mesh observability UI.
+
+auth:
+  strategy: anonymous
+
+server:
+  web_fqdn: ""
+  web_port: 20001
+
+external_services:
+  istio:
+    root_namespace: istio-system
+  prometheus:
+    url: "${prometheus_url}"
+  grafana:
+    enabled: true
+    in_cluster_url: "${grafana_url}"
+    url: ""
+  tracing:
+    enabled: false
+
+deployment:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi

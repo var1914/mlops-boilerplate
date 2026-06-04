@@ -4,6 +4,8 @@ Complete guide for deploying the ML Inference Infrastructure on Kubernetes.
 
 > **Status:** Tested on Docker Desktop Kubernetes (ARM64/Apple Silicon)
 
+For **AWS production** (RDS, S3, ECR, IRSA, TLS, Airflow S3 logs), see [`terraform/README.md`](../terraform/README.md) and `./scripts/deploy-aws-prod.sh`.
+
 ---
 
 ## Quick Start

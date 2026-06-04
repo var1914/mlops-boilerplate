@@ -1,0 +1,118 @@
+# Apache Airflow on AWS EKS — production values
+# Replaces MinIO/PostgreSQL with S3/RDS; enables remote log storage and IRSA.
+#
+# Deploy (after terraform apply):
+#   ./scripts/deploy-aws-prod.sh apps
+#
+# Set via --set or envsubst before helm upgrade:
+#   AIRFLOW_ECR_REPOSITORY, RDS_HOST, AIRFLOW_IRSA_ROLE_ARN, AIRFLOW_LOGS_BUCKET
+
+images:
+  airflow:
+    repository: REPLACE_AIRFLOW_ECR_REPOSITORY
+    tag: latest
+    pullPolicy: Always
+
+executor: "KubernetesExecutor"
+
+webserver:
+  defaultUser:
+    enabled: false
+  waitForMigrations:
+    enabled: true
+
+scheduler:
+  waitForMigrations:
+    enabled: true
+
+triggerer:
+  waitForMigrations:
+    enabled: true
+  persistence:
+    enabled: false
+
+dagProcessor:
+  waitForMigrations:
+    enabled: true
+
+apiServer:
+  waitForMigrations:
+    enabled: true
+
+dags:
+  persistence:
+    enabled: false
+
+workers:
+  serviceAccount:
+    create: false
+    name: airflow-worker
+  persistence:
+    enabled: false
+
+logs:
+  persistence:
+    enabled: false
+
+postgresql:
+  enabled: false
+
+redis:
+  enabled: false
+
+data:
+  metadataConnection:
+    user: REPLACE_RDS_USERNAME
+    pass: REPLACE_RDS_PASSWORD
+    protocol: postgresql
+    host: REPLACE_RDS_HOST
+    port: 5432
+    db: airflow
+
+serviceAccount:
+  create: true
+  name: airflow-worker
+  annotations:
+    eks.amazonaws.com/role-arn: REPLACE_AIRFLOW_IRSA_ROLE_ARN
+
+extraEnvFrom:
+  - configMapRef:
+      name: airflow-platform-config
+  - secretRef:
+      name: airflow-runtime-secrets
+
+env:
+  - name: AIRFLOW__CORE__EXECUTION_API_SERVER_URL
+    value: "http://airflow-api-server:8080/execution/"
+  - name: AIRFLOW__LOGGING__REMOTE_LOGGING
+    value: "True"
+  - name: AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER
+    value: "s3://REPLACE_AIRFLOW_LOGS_BUCKET/logs"
+  - name: AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID
+    value: "aws_default"
+  - name: AIRFLOW__LOGGING__DELETE_LOCAL_LOGS
+    value: "True"
+  - name: PYTHONPATH
+    value: /opt/airflow/dags:/opt/airflow/dags/ml:/opt/airflow/src:/opt/airflow
+
+config:
+  core:
+    load_examples: "False"
+    dags_folder: /opt/airflow/dags/airflow_dags
+  logging:
+    remote_logging: "True"
+    remote_base_log_folder: "s3://REPLACE_AIRFLOW_LOGS_BUCKET/logs"
+    remote_log_conn_id: "aws_default"
+    delete_local_logs: "True"
+
+migrateDatabaseJob:
+  enabled: true
+
+waitForMigrations:
+  enabled: true
+
+createUserJob:
+  useHelmHooks: false
+
+# No static AWS keys — IRSA provides credentials
+extraEnv: []
