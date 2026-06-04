@@ -1,0 +1,99 @@
+# =============================================================================
+# Production — copy to terraform.tfvars and customize
+# =============================================================================
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Uncommented lines = required (no default in variables.tf).
+# Commented lines   = optional; values shown are the prod defaults from
+#                     environments/prod/variables.tf. Uncomment only to override.
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Required
+# -----------------------------------------------------------------------------
+
+project_name = "mlops-boilerplate"
+environment  = "prod"
+region       = "us-east-1"
+
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# Let's Encrypt registration email (required for TLS certificates)
+acme_email = "you@example.com"
+
+# -----------------------------------------------------------------------------
+# Ingress / DNS (optional — defaults shown)
+# -----------------------------------------------------------------------------
+
+# Public API hostname — point DNS CNAME to Istio NLB after apply
+# ingress_api_host = "api.crypto-ml.example.com"  # default
+
+# Optional UI hostname; leave empty for API-only
+# ingress_ui_host = ""  # default
+
+# Use Let's Encrypt staging CA (rate limits are higher; certs not trusted by browsers)
+# acme_use_staging = false  # default
+
+# -----------------------------------------------------------------------------
+# VPC (optional — prod CIDR 10.1.0.0/16)
+# -----------------------------------------------------------------------------
+
+# vpc_cidr = "10.1.0.0/16"  # default
+
+# private_subnet_cidrs = ["10.1.1.0/24", "10.1.2.0/24"]  # default
+
+# public_subnet_cidrs = ["10.1.101.0/24", "10.1.102.0/24"]  # default
+
+# database_subnet_cidrs = ["10.1.201.0/24", "10.1.202.0/24"]  # default
+
+# -----------------------------------------------------------------------------
+# EKS (optional)
+# -----------------------------------------------------------------------------
+
+# kubernetes_version = "1.31"  # default
+
+# node_instance_types = ["m5.large"]  # default
+
+# node_desired_size = 3  # default
+
+# node_min_size = 2  # default
+
+# node_max_size = 6  # default
+
+# -----------------------------------------------------------------------------
+# RDS (optional)
+# -----------------------------------------------------------------------------
+
+# rds_instance_class = "db.r6g.large"  # default
+
+# rds_multi_az = true  # default
+
+# -----------------------------------------------------------------------------
+# ElastiCache (optional)
+# -----------------------------------------------------------------------------
+
+# redis_node_type = "cache.t3.small"  # default
+
+# -----------------------------------------------------------------------------
+# ECR (optional)
+# -----------------------------------------------------------------------------
+
+# Repository suffixes → full name: {project_name}-{environment}-{suffix}
+# ecr_repositories = ["inference-api", "airflow"]  # default
+
+# -----------------------------------------------------------------------------
+# API runtime (optional)
+# -----------------------------------------------------------------------------
+
+# ENVIRONMENT key in ml-pipeline-config; defaults to environment (prod → "prod")
+# api_runtime_environment = "production"  # override example
+
+# -----------------------------------------------------------------------------
+# Application namespaces (optional)
+# -----------------------------------------------------------------------------
+
+# app_namespaces = [
+#   { name = "ml-pipeline", istio_injection = true },
+# ]  # default

@@ -1,0 +1,3 @@
+# Istio base chart — default control-plane revision label.
+
+defaultRevision: default
