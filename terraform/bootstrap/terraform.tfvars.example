@@ -1,0 +1,15 @@
+# =============================================================================
+# Bootstrap — remote Terraform state (run once)
+# =============================================================================
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# All variables have defaults; you only need this file if you want to override
+# bucket/table names or region.
+# =============================================================================
+
+# region = "us-east-1"  # default
+
+# state_bucket_name = "mlops-boilerplate-terraform-state"  # default
+
+# lock_table_name = "terraform-state-lock"  # default
