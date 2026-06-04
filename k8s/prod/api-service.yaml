@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: crypto-prediction-api
+  namespace: ml-pipeline
+  labels:
+    app: crypto-prediction-api
+spec:
+  type: ClusterIP
+  selector:
+    app: crypto-prediction-api
+  ports:
+  - name: http
+    port: 8000
+    targetPort: http

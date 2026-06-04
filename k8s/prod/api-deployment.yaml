@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-prediction-api
+  namespace: ml-pipeline
+  labels:
+    app: crypto-prediction-api
+    component: inference
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: crypto-prediction-api
+  template:
+    metadata:
+      labels:
+        app: crypto-prediction-api
+        component: inference
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: crypto-prediction-api
+      containers:
+      - name: api
+        image: REPLACE_ECR_IMAGE
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: ml-pipeline-config
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: ml-pipeline-secrets
+              key: DB_PASSWORD
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+        livenessProbe:
+          httpGet:
+            path: /live
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 60
+          periodSeconds: 15
+        startupProbe:
+          httpGet:
+            path: /live
+            port: http
+          failureThreshold: 20
+          periodSeconds: 15
+        volumeMounts:
+        - name: model-cache
+          mountPath: /tmp/model_cache
+      volumes:
+      - name: model-cache
+        emptyDir:
+          sizeLimit: 5Gi
